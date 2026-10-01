@@ -42,8 +42,16 @@ export function chapterDraftFrom(chapter: ChapterDraft): ChapterDraft {
   }
 }
 
-export function isRevisionConflictMessage(message: string) {
-  return /版本|更新|刷新/.test(message)
+const staleChapterSaveMessages = [
+  '章节已被其他人更新，请刷新后再保存',
+  '章节蓝图或正文已被其他人更新，请比较后再保存',
+  '章节已被其他人更新，请比较后再保存',
+]
+
+// Only a stale revision is a conflict. Messages that merely mention 版本,
+// such as an invalid title or a failed revision insert, keep the local draft.
+export function isStaleChapterSave(code: string, message: string) {
+  return code === 'STALE_REVISION' || staleChapterSaveMessages.includes(message)
 }
 
 // Selecting a chapter loads the cache for that chapter id and revision.
@@ -85,8 +93,9 @@ export function planFailedChapterSave(
   message: string,
   remote: RemoteChapterSnapshot | null,
   baseRevision: number,
+  code = '',
 ): FailedSavePlan {
-  const recordConflict = isRevisionConflictMessage(message) && remote !== null
+  const recordConflict = isStaleChapterSave(code, message) && remote !== null
   const plan: FailedSavePlan = {
     retainLocalDraft: true,
     local,

@@ -90,6 +90,16 @@ export type TaskEvent = {
   createdAt: string
 }
 
+export class ApiError extends Error {
+  code: string
+
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = code
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     ...init,
@@ -101,8 +111,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const value = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const message = value?.error?.message ?? `请求失败 (${response.status})`
-    throw new Error(message)
+    const payload = value?.error ?? {}
+    const message = typeof payload.message === 'string' ? payload.message : `请求失败 (${response.status})`
+    const code = typeof payload.code === 'string' ? payload.code : ''
+    throw new ApiError(message, code)
   }
   return value as T
 }

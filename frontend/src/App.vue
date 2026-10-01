@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  ApiError,
   api,
   connectTask,
   type Chapter,
@@ -31,7 +32,7 @@ import {
   chapterDraftFrom,
   conflictStorageKey,
   draftStorageKey,
-  isRevisionConflictMessage,
+  isStaleChapterSave,
   planConflictResolution,
   planFailedChapterSave,
   restoreChapterDraft,
@@ -447,7 +448,9 @@ function hasUnsavedChanges() {
 }
 
 function isRevisionConflict(error: unknown) {
-  return error instanceof Error && isRevisionConflictMessage(error.message)
+  if (!(error instanceof Error)) return false
+  const code = error instanceof ApiError ? error.code : ''
+  return isStaleChapterSave(code, error.message)
 }
 
 async function persistChapterDraft(showSuccess: boolean) {
@@ -487,13 +490,14 @@ async function persistChapterDraft(showSuccess: boolean) {
     if (showHistory.value && activeChapterId.value === chapterId) await loadChapterRevisions()
   } catch (error) {
     const failureMessage = error instanceof Error ? error.message : ''
+    const failureCode = error instanceof ApiError ? error.code : ''
     if (isRevisionConflict(error)) {
       try {
         const latest = await api.chapters(novelId)
         chapters.value = latest.chapters
         const remoteChapter = latest.chapters.find((item) => item.id === chapterId)
         const remote = remoteChapter ? { ...chapterDraftFrom(remoteChapter), revision: remoteChapter.revision } : null
-        const plan = planFailedChapterSave(snapshot, failureMessage, remote, baseRevision)
+        const plan = planFailedChapterSave(snapshot, failureMessage, remote, baseRevision, failureCode)
         if (plan.recordConflict && plan.conflict && remoteChapter && !plan.overwriteServer) {
           saveConflicts.value = {
             ...saveConflicts.value,
@@ -518,7 +522,7 @@ async function persistChapterDraft(showSuccess: boolean) {
         notify('保存冲突后无法读取服务器版本，本地草稿已保留。', true)
       }
     } else {
-      const plan = planFailedChapterSave(snapshot, failureMessage, null, baseRevision)
+      const plan = planFailedChapterSave(snapshot, failureMessage, null, baseRevision, failureCode)
       autoSaveState.value = 'error'
       if (plan.retainLocalDraft && !plan.overwriteServer) cacheDraft()
       notify(error instanceof Error ? error.message : '章节保存失败，本地草稿已保留。', true)

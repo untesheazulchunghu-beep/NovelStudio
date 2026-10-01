@@ -123,6 +123,72 @@ test('a failed save that is not a revision conflict keeps the local draft', asyn
   assert.deepEqual(plan.local, local)
 })
 
+test('invalid chapter text and a failed revision insert keep the local draft without a conflict', async () => {
+  const originalFetch = globalThis.fetch
+  const { isStaleChapterSave, planFailedChapterSave } = await loadTypeScriptModule('../src/draft.ts')
+  const { api } = await loadTypeScriptModule('../src/api.ts')
+  const local = { title: '', body: '本地正文', goal: '过长的蓝图', keyEvents: '事件', suspenseHook: '钩子' }
+  const remote = { title: '服务器标题', body: '服务器正文', goal: '服务器目标', keyEvents: '', suspenseHook: '', revision: 4 }
+  const chapter = {
+    id: 'chapter-1',
+    novelId: 'novel-1',
+    number: 1,
+    title: local.title,
+    body: local.body,
+    revision: 3,
+    updatedAt: '2026-01-02T03:04:05Z',
+    status: 'draft',
+    goal: local.goal,
+    keyEvents: local.keyEvents,
+    suspenseHook: local.suspenseHook,
+  }
+  const failures = [
+    { status: 400, code: 'INVALID_CHAPTER', message: '章节标题、版本号或蓝图字段无效' },
+    { status: 500, code: 'DATABASE_ERROR', message: '记录章节版本失败' },
+  ]
+  globalThis.fetch = async () => {
+    const failure = failures.shift()
+    return new Response(JSON.stringify({ error: failure }), {
+      status: failure.status,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    for (const failure of [
+      { status: 400, code: 'INVALID_CHAPTER', message: '章节标题、版本号或蓝图字段无效' },
+      { status: 500, code: 'DATABASE_ERROR', message: '记录章节版本失败' },
+    ]) {
+      let caught
+      try {
+        await api.saveChapter(chapter)
+      } catch (error) {
+        caught = error
+      }
+      assert.equal(caught.code, failure.code)
+      assert.equal(caught.message, failure.message)
+      assert.equal(isStaleChapterSave(caught.code, caught.message), false)
+      const plan = planFailedChapterSave(local, caught.message, remote, chapter.revision, caught.code)
+      assert.equal(plan.retainLocalDraft, true)
+      assert.equal(plan.overwriteServer, false)
+      assert.equal(plan.recordConflict, false)
+      assert.equal(plan.conflict, undefined)
+      assert.deepEqual(plan.local, local)
+    }
+    assert.equal(isStaleChapterSave('STALE_REVISION', '章节标题、版本号或蓝图字段无效'), true)
+    for (const message of [
+      '章节已被其他人更新，请刷新后再保存',
+      '章节蓝图或正文已被其他人更新，请比较后再保存',
+      '章节已被其他人更新，请比较后再保存',
+    ]) {
+      const plan = planFailedChapterSave(local, message, remote, chapter.revision)
+      assert.equal(plan.recordConflict, true)
+      assert.equal(plan.conflict.baseRevision, chapter.revision)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a revision conflict keeps both drafts and does not overwrite unless confirmed', async () => {
   const { planFailedChapterSave, planConflictResolution } = await loadTypeScriptModule('../src/draft.ts')
   const local = { title: '本地标题', body: '本地正文', goal: '本地目标', keyEvents: '本地事件', suspenseHook: '本地钩子' }

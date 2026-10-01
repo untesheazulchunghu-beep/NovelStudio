@@ -1,0 +1,9 @@
+ck/
+backend/data/
+backend/.env
+backend/novelstudio
+backend/novelstudio.exe
+backend/novelstudio-backup.exe
+frontend/node_modules/
+frontend/dist/
+release/

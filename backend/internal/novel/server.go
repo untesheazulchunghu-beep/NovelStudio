@@ -108,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/graph/nodes", s.createGraphNode)
 	mux.HandleFunc("PUT /api/v1/novels/{novelID}/graph/nodes/{nodeID}", s.updateGraphNode)
 	mux.HandleFunc("DELETE /api/v1/novels/{novelID}/graph/nodes/{nodeID}", s.deleteGraphNode)
+	mux.HandleFunc("PUT /api/v1/novels/{novelID}/graph/nodes/{nodeID}/states", s.upsertCharacterState)
+	mux.HandleFunc("DELETE /api/v1/novels/{novelID}/graph/nodes/{nodeID}/states/{stateID}", s.deleteCharacterState)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/graph/edges", s.createGraphEdge)
 	mux.HandleFunc("PUT /api/v1/novels/{novelID}/graph/edges/{edgeID}", s.updateGraphEdge)
 	mux.HandleFunc("DELETE /api/v1/novels/{novelID}/graph/edges/{edgeID}", s.deleteGraphEdge)

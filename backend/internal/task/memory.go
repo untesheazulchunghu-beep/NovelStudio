@@ -55,6 +55,21 @@ type StoredEntity struct {
 	Summary string
 }
 
+// StoredCharacterState is a manually maintained character snapshot tied to a
+// graph character and the chapter where that snapshot takes effect.
+type StoredCharacterState struct {
+	CharacterID    string
+	CharacterLabel string
+	ChapterID      string
+	ChapterNumber  int
+	ChapterTitle   string
+	Appellation    string
+	Age            string
+	Abilities      string
+	Stance         string
+	Notes          string
+}
+
 // StoredRelation is a knowledge-graph edge considered for prompt injection.
 type StoredRelation struct {
 	Source   string
@@ -356,10 +371,35 @@ func LoadNarrativeThreads(ctx context.Context, db queryContext, novelID string) 
 	return threads, rows.Err()
 }
 
+// LoadCharacterStates returns character snapshots attached to live chapters.
+func LoadCharacterStates(ctx context.Context, db queryContext, novelID string) ([]StoredCharacterState, error) {
+	rows, err := db.QueryContext(ctx, `SELECT state.character_id, node.label, state.chapter_id, chapter.chapter_number, chapter.title,
+		state.appellation, state.age, state.abilities, state.stance, state.notes
+		FROM character_states state
+		JOIN graph_nodes node ON node.id = state.character_id AND node.novel_id = state.novel_id AND node.kind = 'character'
+		JOIN chapters chapter ON chapter.id = state.chapter_id AND chapter.novel_id = state.novel_id
+		WHERE state.novel_id = ? AND chapter.deleted_at IS NULL
+		ORDER BY chapter.chapter_number, node.label, state.id`, novelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := make([]StoredCharacterState, 0)
+	for rows.Next() {
+		var state StoredCharacterState
+		if err := rows.Scan(&state.CharacterID, &state.CharacterLabel, &state.ChapterID, &state.ChapterNumber, &state.ChapterTitle,
+			&state.Appellation, &state.Age, &state.Abilities, &state.Stance, &state.Notes); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
 // AssembleChapterContext selects the recent summary window, blueprint-matched
-// people and places, and unrecovered foreshadowing, then slices each section
-// to its own share of budget so one section cannot consume the others.
-func AssembleChapterContext(budget int, chapterNumber int, blueprint, header string, memories []StoredMemory, entities []StoredEntity, relations []StoredRelation, threads []StoredThread) AssembledContext {
+// people and places with their latest character states, and unrecovered
+// foreshadowing, then budgets each section independently.
+func AssembleChapterContext(budget int, chapterNumber int, blueprint, header string, memories []StoredMemory, entities []StoredEntity, relations []StoredRelation, threads []StoredThread, characterStateSets ...[]StoredCharacterState) AssembledContext {
 	if budget < 0 {
 		budget = 0
 	}
@@ -409,6 +449,9 @@ func AssembleChapterContext(budget int, chapterNumber int, blueprint, header str
 		matchedSet[label] = true
 	}
 	graphPieces := make([]contextPiece, 0)
+	if len(characterStateSets) > 0 {
+		graphPieces = append(graphPieces, characterStatePieces(chapterNumber, matched, characterStateSets[0])...)
+	}
 	for _, entity := range entities {
 		label := strings.TrimSpace(entity.Label)
 		manifest := kindLabel(entity.Kind) + "：" + label
@@ -509,11 +552,11 @@ func AssembleChapterContext(budget int, chapterNumber int, blueprint, header str
 	}
 }
 
-// AssembleContinuityContext selects current graph facts and finalized chapter
-// memories using the chapter text itself as the relevance query. Unlike the
-// generation context, it includes the structured character and setting fields
-// from memories so the reviewer can compare those details against the draft.
-func AssembleContinuityContext(budget, chapterNumber int, chapterText, header string, memories []StoredMemory, entities []StoredEntity, relations []StoredRelation, threads []StoredThread) AssembledContext {
+// AssembleContinuityContext selects current graph facts, effective character
+// states, and finalized chapter memories using the chapter text as the
+// relevance query. It includes structured memory fields so the reviewer can
+// compare those details against the draft.
+func AssembleContinuityContext(budget, chapterNumber int, chapterText, header string, memories []StoredMemory, entities []StoredEntity, relations []StoredRelation, threads []StoredThread, characterStateSets ...[]StoredCharacterState) AssembledContext {
 	if budget < 0 {
 		budget = 0
 	}
@@ -546,6 +589,9 @@ func AssembleContinuityContext(budget, chapterNumber int, chapterText, header st
 			Body:  manifest + "\n事实：" + strings.TrimSpace(entity.Summary) + "\n",
 			Kind:  "entity",
 		})
+	}
+	if len(characterStateSets) > 0 {
+		graphPieces = append(characterStatePieces(chapterNumber, matchedLabels, characterStateSets[0]), graphPieces...)
 	}
 	for _, relation := range relations {
 		if !matchedSet[strings.TrimSpace(relation.Source)] && !matchedSet[strings.TrimSpace(relation.Target)] {
@@ -816,4 +862,53 @@ func kindLabel(kind string) string {
 	default:
 		return "实体"
 	}
+}
+
+func characterStatePieces(chapterNumber int, matchedLabels []string, states []StoredCharacterState) []contextPiece {
+	matched := make(map[string]bool, len(matchedLabels))
+	for _, label := range matchedLabels {
+		matched[label] = true
+	}
+	latestByCharacter := make(map[string]StoredCharacterState)
+	for _, state := range states {
+		if state.ChapterNumber > chapterNumber || !matched[state.CharacterLabel] {
+			continue
+		}
+		previous, exists := latestByCharacter[state.CharacterID]
+		if !exists || state.ChapterNumber > previous.ChapterNumber {
+			latestByCharacter[state.CharacterID] = state
+		}
+	}
+	effective := make([]StoredCharacterState, 0, len(latestByCharacter))
+	for _, state := range latestByCharacter {
+		effective = append(effective, state)
+	}
+	sort.Slice(effective, func(i, j int) bool {
+		if effective[i].CharacterLabel != effective[j].CharacterLabel {
+			return effective[i].CharacterLabel < effective[j].CharacterLabel
+		}
+		return effective[i].CharacterID < effective[j].CharacterID
+	})
+	pieces := make([]contextPiece, 0, len(effective))
+	for _, state := range effective {
+		manifest := "人物状态：" + state.CharacterLabel + "（第" + strconv.Itoa(state.ChapterNumber) + "章）"
+		body := manifest + "\n记录章节：《" + state.ChapterTitle + "》\n"
+		if state.Appellation != "" {
+			body += "称谓：" + state.Appellation + "\n"
+		}
+		if state.Age != "" {
+			body += "年龄：" + state.Age + "\n"
+		}
+		if state.Abilities != "" {
+			body += "能力：" + state.Abilities + "\n"
+		}
+		if state.Stance != "" {
+			body += "立场：" + state.Stance + "\n"
+		}
+		if state.Notes != "" {
+			body += "补充说明：" + state.Notes + "\n"
+		}
+		pieces = append(pieces, contextPiece{Label: manifest, Body: body, Kind: "characterState"})
+	}
+	return pieces
 }

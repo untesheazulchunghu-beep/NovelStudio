@@ -2855,6 +2855,33 @@ select {
   cursor: not-allowed;
   opacity: 0.5;
 }
+.character-state-card .side-form-hint {
+  margin: -5px 0 12px;
+  color: #98a39b;
+  font-size: 8px;
+  line-height: 1.7;
+}
+.character-state-list {
+  max-height: 230px;
+}
+.character-state-empty {
+  margin: 12px 0 0;
+  color: #9aa59c;
+  font-size: 8px;
+}
+.character-state-existing-hint {
+  margin: 8px 0 -5px;
+  color: #a17b51;
+  font-size: 8px;
+}
+.character-state-row {
+  align-items: start;
+  padding: 5px 0;
+}
+.character-state-row small {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
 .trash-item {
   flex-wrap: wrap;
 }

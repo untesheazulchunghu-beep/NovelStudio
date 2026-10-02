@@ -37,6 +37,22 @@ export type GraphNode = {
   x: number
   y: number
 }
+export type CharacterState = {
+  id: string
+  novelId: string
+  characterId: string
+  characterLabel: string
+  chapterId: string
+  chapterNumber: number
+  chapterTitle: string
+  appellation: string
+  age: string
+  abilities: string
+  stance: string
+  notes: string
+  updatedAt: string
+}
+export type CharacterStateInput = Pick<CharacterState, 'chapterId' | 'appellation' | 'age' | 'abilities' | 'stance' | 'notes'>
 export type GraphEdge = {
   id: string
   novelId: string
@@ -212,7 +228,8 @@ export const api = {
   restoreChapterRevision: (novelId: string, chapterId: string, revision: number) =>
     request<Chapter>(`/novels/${novelId}/chapters/${chapterId}/revisions/${revision}/restore`, json({})),
 
-  graph: (novelId: string) => request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/novels/${novelId}/graph`),
+  graph: (novelId: string) =>
+    request<{ nodes: GraphNode[]; edges: GraphEdge[]; characterStates: CharacterState[] }>(`/novels/${novelId}/graph`),
   createGraphNode: (novelId: string, input: Pick<GraphNode, 'kind' | 'label' | 'summary' | 'x' | 'y'>) =>
     request<GraphNode>(`/novels/${novelId}/graph/nodes`, json(input)),
   createGraphEdge: (novelId: string, input: Pick<GraphEdge, 'sourceId' | 'targetId' | 'relation' | 'summary'>) =>
@@ -224,6 +241,10 @@ export const api = {
   ) => request<GraphNode>(`/novels/${novelId}/graph/nodes/${nodeId}`, put(input)),
   deleteGraphNode: (novelId: string, nodeId: string) =>
     request<{ ok: boolean }>(`/novels/${novelId}/graph/nodes/${nodeId}`, { method: 'DELETE' }),
+  upsertCharacterState: (novelId: string, characterId: string, input: CharacterStateInput) =>
+    request<CharacterState>(`/novels/${novelId}/graph/nodes/${characterId}/states`, put(input)),
+  deleteCharacterState: (novelId: string, characterId: string, stateId: string) =>
+    request<{ ok: boolean }>(`/novels/${novelId}/graph/nodes/${characterId}/states/${stateId}`, { method: 'DELETE' }),
   updateGraphEdge: (
     novelId: string,
     edgeId: string,

@@ -6,6 +6,8 @@ import {
   connectTask,
   type Chapter,
   type ChapterRevision,
+  type CharacterState,
+  type CharacterStateInput,
   type ContinuityFinding,
   type GraphEdge,
   type GraphNode,
@@ -84,8 +86,18 @@ const showHistory = ref(false)
 const loadingHistory = ref(false)
 const nodes = ref<GraphNode[]>([])
 const edges = ref<GraphEdge[]>([])
+const characterStates = ref<CharacterState[]>([])
 const graphForm = ref({ kind: 'character' as GraphNode['kind'], label: '', summary: '' })
 const editingNodeId = ref('')
+const characterStateForm = ref<CharacterStateInput>({
+  chapterId: '',
+  appellation: '',
+  age: '',
+  abilities: '',
+  stance: '',
+  notes: '',
+})
+const editingCharacterStateId = ref('')
 const edgeForm = ref({ sourceId: '', targetId: '', relation: '', summary: '' })
 const editingEdgeId = ref('')
 const workflows = ref<Workflow[]>([])
@@ -249,12 +261,15 @@ async function openNovel(novel: Novel, nextSection: typeof section.value = 'writ
     deletedChapters.value = chapterTrashResult.chapters
     nodes.value = graphResult.nodes
     edges.value = graphResult.edges
+    characterStates.value = graphResult.characterStates
+    syncCharacterStateChapterMetadata()
     workflows.value = workflowResult.workflows
     proposals.value = proposalResult.proposals
     tasks.value = taskResult.tasks
     if (!chapters.value.some((chapter) => chapter.id === activeChapterId.value)) {
       activeChapterId.value = chapters.value[0]?.id ?? ''
     }
+    resetCharacterStateForm(activeChapter.value?.id ?? '')
     syncDraft()
     if (workflows.value.length) {
       selectWorkflow(workflows.value[0])
@@ -501,6 +516,7 @@ async function persistChapterDraft(showSuccess: boolean) {
     const saved = await api.saveChapter({ ...chapter, ...snapshot })
     const index = chapters.value.findIndex((item) => item.id === saved.id)
     if (index !== -1) chapters.value[index] = saved
+    syncCharacterStateChapterMetadata()
     const currentDraftIsSnapshot = activeChapterId.value === chapterId && draftMatches(snapshot)
     updateDraftCacheAfterSave(chapterId, baseRevision, saved.revision, snapshot, !currentDraftIsSnapshot)
     if (currentDraftIsSnapshot) {
@@ -519,6 +535,7 @@ async function persistChapterDraft(showSuccess: boolean) {
       try {
         const latest = await api.chapters(novelId)
         chapters.value = latest.chapters
+        syncCharacterStateChapterMetadata()
         const remoteChapter = latest.chapters.find((item) => item.id === chapterId)
         const remote = remoteChapter ? { ...chapterDraftFrom(remoteChapter), revision: remoteChapter.revision } : null
         const plan = planFailedChapterSave(snapshot, failureMessage, remote, baseRevision, failureCode)
@@ -658,7 +675,10 @@ async function moveChapter(chapterId: string, offset: -1 | 1) {
       novel.id,
       reordered.map((chapter) => chapter.id),
     )
-    if (activeNovel.value?.id === novel.id) chapters.value = result.chapters
+    if (activeNovel.value?.id === novel.id) {
+      chapters.value = result.chapters
+      syncCharacterStateChapterMetadata()
+    }
   } catch (error) {
     notify(error instanceof Error ? error.message : '调整章节顺序失败', true)
   }
@@ -678,7 +698,9 @@ async function deleteActiveChapter() {
   if (hasUnsavedChanges()) cacheDraft()
   try {
     await api.deleteChapter(novel.id, chapter.id)
+    const editedState = characterStates.value.find((state) => state.id === editingCharacterStateId.value)
     chapters.value = chapters.value.filter((item) => item.id !== chapter.id)
+    characterStates.value = characterStates.value.filter((state) => state.chapterId !== chapter.id)
     deletedChapters.value = (await api.deletedChapters(novel.id)).chapters
     selectedChapterIds.value = selectedChapterIds.value.filter((id) => id !== chapter.id)
     workflowChapterIds.value = workflowChapterIds.value.filter((id) => id !== chapter.id)
@@ -689,6 +711,9 @@ async function deleteActiveChapter() {
       autoSaveTimer = 0
       activeChapterId.value = chapters.value[0]?.id ?? ''
     }
+    if (characterStateForm.value.chapterId === chapter.id || editedState?.chapterId === chapter.id) {
+      cancelCharacterStateEdit()
+    }
     chapterRevisions.value = []
     syncDraft()
     notify('章节已移入回收站')
@@ -698,21 +723,25 @@ async function deleteActiveChapter() {
 }
 
 async function restoreChapter(chapter: Chapter) {
-  if (!activeNovel.value || !canEdit.value || savingChapter.value) return
+  const novel = activeNovel.value
+  if (!novel || !canEdit.value || savingChapter.value) return
   if (hasUnsavedChanges()) cacheDraft()
   try {
-    await api.restoreChapter(activeNovel.value.id, chapter.id)
+    await api.restoreChapter(novel.id, chapter.id)
     const [activeResult, deletedResult] = await Promise.all([
-      api.chapters(activeNovel.value.id),
-      api.deletedChapters(activeNovel.value.id),
+      api.chapters(novel.id),
+      api.deletedChapters(novel.id),
     ])
+    if (activeNovel.value?.id !== novel.id) return
     chapters.value = activeResult.chapters
     deletedChapters.value = deletedResult.chapters
+    syncCharacterStateChapterMetadata()
     window.clearTimeout(draftSaveTimer)
     draftSaveTimer = 0
     window.clearTimeout(autoSaveTimer)
     autoSaveTimer = 0
     activeChapterId.value = chapter.id
+    await reloadCharacterStates(novel.id)
     notify(`第 ${chapter.number} 章已恢复`)
   } catch (error) {
     notify(error instanceof Error ? error.message : '恢复章节失败', true)
@@ -791,6 +820,7 @@ async function restoreChapterRevision(revision: ChapterRevision) {
     const restored = await api.restoreChapterRevision(activeNovel.value.id, activeChapter.value.id, revision.revision)
     const index = chapters.value.findIndex((chapter) => chapter.id === restored.id)
     if (index !== -1) chapters.value[index] = restored
+    syncCharacterStateChapterMetadata()
     syncDraft()
     await loadChapterRevisions()
     notify(`已恢复到 v${revision.revision}`)
@@ -869,17 +899,116 @@ function editGraphNode(node: GraphNode) {
   if (!canEdit.value) return
   editingNodeId.value = node.id
   graphForm.value = { kind: node.kind, label: node.label, summary: node.summary }
+  cancelCharacterStateEdit()
 }
 
 function selectGraphNodeForEdit(nodeId: string) {
   const node = nodes.value.find((item) => item.id === nodeId)
-  if (node) editGraphNode(node)
-  else cancelGraphNodeEdit()
+  if (!node) {
+    cancelGraphNodeEdit()
+    return
+  }
+  editingNodeId.value = node.id
+  graphForm.value = { kind: node.kind, label: node.label, summary: node.summary }
+  cancelCharacterStateEdit()
 }
 
 function cancelGraphNodeEdit() {
   editingNodeId.value = ''
   graphForm.value = { kind: 'character', label: '', summary: '' }
+  cancelCharacterStateEdit()
+}
+
+function resetCharacterStateForm(chapterId = activeChapter.value?.id ?? '') {
+  characterStateForm.value = { chapterId, appellation: '', age: '', abilities: '', stance: '', notes: '' }
+}
+
+function cancelCharacterStateEdit() {
+  editingCharacterStateId.value = ''
+  resetCharacterStateForm()
+}
+
+function syncCharacterStateChapterMetadata() {
+  const chaptersByID = new Map(chapters.value.map((chapter) => [chapter.id, chapter]))
+  characterStates.value = characterStates.value
+    .map((state) => {
+      const chapter = chaptersByID.get(state.chapterId)
+      return chapter ? { ...state, chapterNumber: chapter.number, chapterTitle: chapter.title } : state
+    })
+    .sort((a, b) => a.chapterNumber - b.chapterNumber || a.characterLabel.localeCompare(b.characterLabel))
+}
+
+async function reloadCharacterStates(novelId: string) {
+  try {
+    const graph = await api.graph(novelId)
+    if (activeNovel.value?.id !== novelId) return
+    characterStates.value = graph.characterStates
+    syncCharacterStateChapterMetadata()
+  } catch (error) {
+    notify(error instanceof Error ? `人物状态刷新失败：${error.message}` : '人物状态刷新失败', true)
+  }
+}
+
+function editCharacterState(state: CharacterState) {
+  if (!canEdit.value || state.characterId !== editingNodeId.value) return
+  editingCharacterStateId.value = state.id
+  characterStateForm.value = {
+    chapterId: state.chapterId,
+    appellation: state.appellation,
+    age: state.age,
+    abilities: state.abilities,
+    stance: state.stance,
+    notes: state.notes,
+  }
+}
+
+async function saveCharacterState() {
+  const novel = activeNovel.value
+  const character = nodes.value.find((node) => node.id === editingNodeId.value && node.kind === 'character')
+  if (!novel || !canEdit.value || !character || !characterStateForm.value.chapterId) return
+  const characterId = character.id
+  const editedStateId = editingCharacterStateId.value
+  const input = { ...characterStateForm.value }
+  if (
+    !editedStateId &&
+    characterStates.value.some((state) => state.characterId === characterId && state.chapterId === input.chapterId)
+  ) {
+    notify('该章节已有状态记录，请从时间线中选择“编辑”。', true)
+    return
+  }
+  try {
+    const saved = await api.upsertCharacterState(novel.id, characterId, input)
+    if (activeNovel.value?.id !== novel.id) return
+    characterStates.value = characterStates.value
+      .filter((item) => item.characterId !== saved.characterId || item.chapterId !== saved.chapterId)
+      .concat(saved)
+      .sort((a, b) => a.chapterNumber - b.chapterNumber || a.characterLabel.localeCompare(b.characterLabel))
+    if (editingNodeId.value === characterId && editingCharacterStateId.value === editedStateId) {
+      cancelCharacterStateEdit()
+    }
+    notify('人物状态已保存')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '保存人物状态失败', true)
+  }
+}
+
+async function removeCharacterState(state: CharacterState) {
+  const novel = activeNovel.value
+  if (
+    !novel ||
+    !canEdit.value ||
+    !window.confirm(`删除“${state.characterLabel}”第 ${state.chapterNumber} 章的人物状态记录？`)
+  )
+    return
+  try {
+    await api.deleteCharacterState(novel.id, state.characterId, state.id)
+    if (activeNovel.value?.id !== novel.id) return
+    characterStates.value = characterStates.value.filter((item) => item.id !== state.id)
+    if (editingCharacterStateId.value === state.id) cancelCharacterStateEdit()
+    notify('人物状态记录已删除')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '删除人物状态失败', true)
+  }
 }
 
 async function saveGraphNode() {
@@ -897,6 +1026,9 @@ async function saveGraphNode() {
     })
     if (activeNovel.value?.id !== novelId) return
     nodes.value = nodes.value.map((node) => (node.id === updated.id ? updated : node))
+    characterStates.value = characterStates.value.map((state) =>
+      state.characterId === updated.id ? { ...state, characterLabel: updated.label } : state,
+    )
     if (editingNodeId.value === editingId) cancelGraphNodeEdit()
     notify('设定实体已更新')
   } catch (error) {
@@ -975,6 +1107,7 @@ async function removeGraphNode(node: GraphNode) {
     if (activeNovel.value?.id !== novelId) return
     nodes.value = nodes.value.filter((item) => item.id !== node.id)
     edges.value = edges.value.filter((item) => item.sourceId !== node.id && item.targetId !== node.id)
+    characterStates.value = characterStates.value.filter((state) => state.characterId !== node.id)
     if (editingNodeId.value === node.id) cancelGraphNodeEdit()
     if (editingEdgeId.value && edges.value.every((edge) => edge.id !== editingEdgeId.value)) cancelGraphEdgeEdit()
     notify('实体已删除')
@@ -1496,6 +1629,7 @@ async function refreshNovelData() {
     api.tasks(activeNovel.value.id),
   ])
   chapters.value = chapterResult.chapters
+  syncCharacterStateChapterMetadata()
   refreshSaveConflictSnapshots(chapterResult.chapters)
   proposals.value = proposalResult.proposals
   tasks.value = taskResult.tasks
@@ -1860,11 +1994,15 @@ onBeforeUnmount(closeTaskSocket)
         v-else-if="section === 'knowledge' && activeNovel"
         v-model:graph-form="graphForm"
         v-model:editing-node-id="editingNodeId"
+        v-model:character-state-form="characterStateForm"
+        v-model:editing-character-state-id="editingCharacterStateId"
         v-model:edge-form="edgeForm"
         v-model:editing-edge-id="editingEdgeId"
         :novel="activeNovel"
         :nodes="nodes"
         :edges="edges"
+        :chapters="chapters"
+        :character-states="characterStates"
         :can-edit="canEdit"
         @select-node="selectGraphNodeForEdit"
         @add-node="addGraphNode"
@@ -1872,6 +2010,10 @@ onBeforeUnmount(closeTaskSocket)
         @cancel-node="cancelGraphNodeEdit"
         @edit-node="editGraphNode"
         @remove-node="removeGraphNode"
+        @save-character-state="saveCharacterState"
+        @cancel-character-state="cancelCharacterStateEdit"
+        @edit-character-state="editCharacterState"
+        @remove-character-state="removeCharacterState"
         @add-edge="addGraphEdge"
         @save-edge="saveGraphEdge"
         @cancel-edge="cancelGraphEdgeEdit"

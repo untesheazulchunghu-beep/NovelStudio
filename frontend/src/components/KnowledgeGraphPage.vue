@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import type { GraphEdge, GraphNode, Novel } from '../api'
+import { computed } from 'vue'
+import type { CharacterState, CharacterStateInput, Chapter, GraphEdge, GraphNode, Novel } from '../api'
 
 const graphForm = defineModel<{ kind: GraphNode['kind']; label: string; summary: string }>('graphForm', {
   required: true,
 })
 const editingNodeId = defineModel<string>('editingNodeId', { required: true })
+const characterStateForm = defineModel<CharacterStateInput>('characterStateForm', { required: true })
+const editingCharacterStateId = defineModel<string>('editingCharacterStateId', { required: true })
 const edgeForm = defineModel<{ sourceId: string; targetId: string; relation: string; summary: string }>('edgeForm', {
   required: true,
 })
@@ -14,6 +17,8 @@ const props = defineProps<{
   novel: Novel
   nodes: GraphNode[]
   edges: GraphEdge[]
+  chapters: Chapter[]
+  characterStates: CharacterState[]
   canEdit: boolean
 }>()
 
@@ -24,6 +29,10 @@ const emit = defineEmits<{
   cancelNode: []
   editNode: [node: GraphNode]
   removeNode: [node: GraphNode]
+  saveCharacterState: []
+  cancelCharacterState: []
+  editCharacterState: [state: CharacterState]
+  removeCharacterState: [state: CharacterState]
   addEdge: []
   saveEdge: []
   cancelEdge: []
@@ -38,6 +47,18 @@ const graphKindLabels: Record<GraphNode['kind'], string> = {
   item: '物品',
   concept: '设定',
 }
+
+const selectedCharacter = computed(() =>
+  props.nodes.find((node) => node.id === editingNodeId.value && node.kind === 'character') ?? null,
+)
+const selectedCharacterStates = computed(() =>
+  props.characterStates
+    .filter((state) => state.characterId === editingNodeId.value)
+    .sort((a, b) => a.chapterNumber - b.chapterNumber),
+)
+const stateForSelectedChapter = computed(() =>
+  selectedCharacterStates.value.find((state) => state.chapterId === characterStateForm.value.chapterId) ?? null,
+)
 
 function graphEdgeLabel(edge: GraphEdge) {
   const source = props.nodes.find((node) => node.id === edge.sourceId)?.label ?? '未知实体'
@@ -125,11 +146,11 @@ function onSelectNode(event: Event) {
       </div>
       <aside class="graph-side">
         <div class="side-form-card">
-          <span class="eyebrow">{{ editingNodeId ? 'EDIT ENTITY' : 'ADD ENTITY' }}</span>
-          <h2>{{ editingNodeId ? '编辑设定实体' : '添加设定实体' }}</h2>
+          <span class="eyebrow">{{ editingNodeId ? (canEdit ? 'EDIT ENTITY' : 'VIEW ENTITY') : 'ADD ENTITY' }}</span>
+          <h2>{{ editingNodeId ? (canEdit ? '编辑设定实体' : '查看设定实体') : '添加设定实体' }}</h2>
           <label v-if="nodes.length"
-            >选择已有实体
-            <select :value="editingNodeId" :disabled="!canEdit" @change="onSelectNode">
+            >选择实体查看或编辑
+            <select :value="editingNodeId" @change="onSelectNode">
               <option value="">新增实体</option>
               <option v-for="node in nodes" :key="node.id" :value="node.id">{{ node.label }}</option>
             </select>
@@ -157,13 +178,14 @@ function onSelectNode(event: Event) {
           </label>
           <div class="graph-form-actions">
             <button
+              v-if="canEdit"
               class="button primary wide"
               :disabled="!canEdit || !graphForm.label.trim()"
               @click="editingNodeId ? emit('saveNode') : emit('addNode')"
             >
               {{ editingNodeId ? '保存实体修改' : '加入图谱' }} <span>{{ editingNodeId ? '✓' : '＋' }}</span>
             </button>
-            <button v-if="editingNodeId" class="text-button" @click="emit('cancelNode')">取消</button>
+            <button v-if="editingNodeId && canEdit" class="text-button" @click="emit('cancelNode')">取消</button>
           </div>
           <div v-if="nodes.length" class="graph-item-list">
             <div v-for="node in nodes" :key="node.id" class="graph-item-row">
@@ -177,6 +199,63 @@ function onSelectNode(event: Event) {
               </div>
             </div>
           </div>
+        </div>
+        <div v-if="selectedCharacter" class="side-form-card character-state-card">
+          <span class="eyebrow">CHARACTER TIMELINE</span>
+          <h2>{{ selectedCharacter.label }} · 章节状态</h2>
+          <p class="side-form-hint">记录人物在不同章节的称谓、年龄、能力与立场；最近一条记录会用于后续章节上下文。</p>
+          <div v-if="canEdit" class="character-state-form">
+            <label
+              >生效章节
+              <select v-model="characterStateForm.chapterId" :disabled="Boolean(editingCharacterStateId)">
+                <option value="">选择章节</option>
+                <option v-for="chapter in chapters" :key="chapter.id" :value="chapter.id">
+                  第 {{ chapter.number }} 章 · {{ chapter.title }}
+                </option>
+              </select>
+            </label>
+            <label
+              >称谓<input v-model="characterStateForm.appellation" maxlength="160" placeholder="例如：巡夜人、沈先生"
+            /></label>
+            <label
+              >年龄<input v-model="characterStateForm.age" maxlength="80" placeholder="例如：二十七岁、外表约四十岁"
+            /></label>
+            <label
+              >能力<textarea v-model="characterStateForm.abilities" rows="2" maxlength="1200" placeholder="能力与限制"></textarea
+            ></label>
+            <label
+              >立场<textarea v-model="characterStateForm.stance" rows="2" maxlength="1200" placeholder="当前目标、阵营或态度"></textarea
+            ></label>
+            <label
+              >补充说明<textarea v-model="characterStateForm.notes" rows="2" maxlength="2000" placeholder="变化依据或其他状态"></textarea
+            ></label>
+            <p v-if="stateForSelectedChapter && !editingCharacterStateId" class="character-state-existing-hint">
+              该章节已有记录，请在下方选择“编辑”。
+            </p>
+            <div class="graph-form-actions">
+              <button
+                class="button secondary wide"
+                :disabled="!characterStateForm.chapterId || (stateForSelectedChapter && !editingCharacterStateId)"
+                @click="emit('saveCharacterState')"
+              >
+                {{ editingCharacterStateId ? '更新章节状态' : '保存章节状态' }}
+              </button>
+              <button v-if="editingCharacterStateId" class="text-button" @click="emit('cancelCharacterState')">取消编辑</button>
+            </div>
+          </div>
+          <div v-if="selectedCharacterStates.length" class="graph-item-list character-state-list">
+            <div v-for="state in selectedCharacterStates" :key="state.id" class="graph-item-row character-state-row">
+              <div>
+                <strong>第 {{ state.chapterNumber }} 章 · {{ state.chapterTitle }}</strong>
+                <small>{{ [state.appellation, state.age, state.abilities, state.stance, state.notes].filter(Boolean).join(' · ') || '未填写状态' }}</small>
+              </div>
+              <div v-if="canEdit" class="graph-item-actions">
+                <button :disabled="!canEdit" @click="emit('editCharacterState', state)">编辑</button>
+                <button :disabled="!canEdit" @click="emit('removeCharacterState', state)">删除</button>
+              </div>
+            </div>
+          </div>
+          <p v-else class="character-state-empty">尚未记录章节状态。</p>
         </div>
         <div class="side-form-card">
           <span class="eyebrow">{{ editingEdgeId ? 'EDIT RELATION' : 'DEFINE RELATION' }}</span>

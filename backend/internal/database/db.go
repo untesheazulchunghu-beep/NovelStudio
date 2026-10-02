@@ -96,6 +96,11 @@ var migrations = []migration{
 		name:    "proposal-demo-mode",
 		apply:   migrateProposalDemoMode,
 	},
+	{
+		version: 5,
+		name:    "character-states",
+		apply:   migrateCharacterStates,
+	},
 }
 
 type columnMigration struct {
@@ -207,6 +212,15 @@ func migrateProposalDemoMode(tx *sql.Tx) error {
 	}
 	_, err = tx.Exec(`ALTER TABLE proposals ADD COLUMN demo_mode INTEGER NOT NULL DEFAULT 0`)
 	return err
+}
+
+func migrateCharacterStates(tx *sql.Tx) error {
+	for _, statement := range characterStateStatements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type queryer interface {
@@ -447,6 +461,28 @@ var chapterMemoryStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_narrative_threads_novel ON narrative_threads(novel_id, status);`,
 }
 
+var characterStateStatements = []string{
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_chapters_id_novel ON chapters(id, novel_id);`,
+	`CREATE TABLE IF NOT EXISTS character_states (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL,
+    chapter_id TEXT NOT NULL,
+    appellation TEXT NOT NULL DEFAULT '',
+    age TEXT NOT NULL DEFAULT '',
+    abilities TEXT NOT NULL DEFAULT '',
+    stance TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (character_id, chapter_id),
+    FOREIGN KEY (character_id, novel_id) REFERENCES graph_nodes(id, novel_id) ON DELETE CASCADE,
+    FOREIGN KEY (chapter_id, novel_id) REFERENCES chapters(id, novel_id) ON DELETE CASCADE
+);`,
+	`CREATE INDEX IF NOT EXISTS idx_character_states_novel_chapter ON character_states(novel_id, chapter_id);`,
+}
+
 func init() {
 	schemaStatements = append(schemaStatements, chapterMemoryStatements...)
+	schemaStatements = append(schemaStatements, characterStateStatements...)
 }

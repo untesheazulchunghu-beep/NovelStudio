@@ -278,6 +278,10 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	if err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取伏笔失败"}
 	}
+	characterStates, err := task.LoadCharacterStates(ctx, graphTx, novelID)
+	if err != nil {
+		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取人物状态失败"}
+	}
 	if err := graphTx.Commit(); err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
@@ -307,9 +311,9 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 		blueprint := strings.Join([]string{chapter.Title, chapter.Goal, chapter.KeyEvents, chapter.SuspenseHook}, "\n")
 		var assembled task.AssembledContext
 		if kind == "continuity" {
-			assembled = task.AssembleContinuityContext(budget, chapter.Number, blueprint+"\n"+chapter.Body, header, memories, entities, relations, threads)
+			assembled = task.AssembleContinuityContext(budget, chapter.Number, blueprint+"\n"+chapter.Body, header, memories, entities, relations, threads, characterStates)
 		} else {
-			assembled = task.AssembleChapterContext(budget, chapter.Number, blueprint, header, memories, entities, relations, threads)
+			assembled = task.AssembleChapterContext(budget, chapter.Number, blueprint, header, memories, entities, relations, threads, characterStates)
 		}
 		chapter.InjectedContext = assembled.Text
 		if index == 0 {

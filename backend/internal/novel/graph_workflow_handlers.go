@@ -71,7 +71,12 @@ func (s *Server) getGraph(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取关系失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+	characterStates, err := loadCharacterStates(r, s.db, novelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取人物状态失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges, "characterStates": characterStates})
 }
 
 func (s *Server) createGraphNode(w http.ResponseWriter, r *http.Request) {
@@ -161,13 +166,34 @@ func (s *Server) updateGraphNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_NODE", "实体类型无效，名称不能为空且不超过 80 字")
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), `UPDATE graph_nodes SET kind = ?, label = ?, summary = ?, x = ?, y = ? WHERE id = ? AND novel_id = ?`, input.Kind, input.Label, input.Summary, input.X, input.Y, r.PathValue("nodeID"), r.PathValue("novelID"))
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新知识实体失败")
+		return
+	}
+	defer tx.Rollback()
+	if input.Kind != "character" {
+		var hasStates bool
+		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM character_states WHERE character_id = ? AND novel_id = ?)`, r.PathValue("nodeID"), r.PathValue("novelID")).Scan(&hasStates); err != nil {
+			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "检查人物状态失败")
+			return
+		}
+		if hasStates {
+			writeError(w, http.StatusConflict, "CHARACTER_STATES_EXIST", "请先删除该人物的状态记录，再更改实体类型")
+			return
+		}
+	}
+	result, err := tx.ExecContext(r.Context(), `UPDATE graph_nodes SET kind = ?, label = ?, summary = ?, x = ?, y = ? WHERE id = ? AND novel_id = ?`, input.Kind, input.Label, input.Summary, input.X, input.Y, r.PathValue("nodeID"), r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新知识实体失败")
 		return
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
 		writeError(w, http.StatusNotFound, "NODE_NOT_FOUND", "知识实体不存在")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新知识实体失败")
 		return
 	}
 	var node GraphNode

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"novelstudio/internal/database"
+	"novelstudio/internal/task"
 )
 
 type Novel struct {
@@ -38,6 +39,7 @@ type Chapter struct {
 	SuspenseHook string `json:"suspenseHook"`
 	DeletedAt    string `json:"deletedAt,omitempty"`
 	UpdatedAt    string `json:"updatedAt"`
+	MemoryStatus string `json:"memoryStatus,omitempty"`
 }
 
 func (s *Server) listNovels(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +268,10 @@ func (s *Server) listChapters(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor", "reviewer", "viewer") {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, COALESCE(deleted_at, ''), updated_at FROM chapters WHERE novel_id = ? AND deleted_at IS NULL ORDER BY chapter_number`, r.PathValue("novelID"))
+	rows, err := s.db.QueryContext(r.Context(), `SELECT c.id, c.novel_id, c.chapter_number, c.title, c.body, c.revision, c.status, c.goal, c.key_events, c.suspense_hook, COALESCE(c.deleted_at, ''), c.updated_at,
+		CASE WHEN m.chapter_id IS NULL THEN 'missing' WHEN m.source_revision = c.revision THEN 'current' ELSE 'stale' END
+		FROM chapters c LEFT JOIN chapter_memories m ON m.chapter_id = c.id
+		WHERE c.novel_id = ? AND c.deleted_at IS NULL ORDER BY c.chapter_number`, r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
 		return
@@ -275,7 +280,7 @@ func (s *Server) listChapters(w http.ResponseWriter, r *http.Request) {
 	chapters := make([]Chapter, 0)
 	for rows.Next() {
 		var item Chapter
-		if err := rows.Scan(&item.ID, &item.NovelID, &item.Number, &item.Title, &item.Body, &item.Revision, &item.Status, &item.Goal, &item.KeyEvents, &item.SuspenseHook, &item.DeletedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.NovelID, &item.Number, &item.Title, &item.Body, &item.Revision, &item.Status, &item.Goal, &item.KeyEvents, &item.SuspenseHook, &item.DeletedAt, &item.UpdatedAt, &item.MemoryStatus); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
 			return
 		}
@@ -293,7 +298,10 @@ func (s *Server) listDeletedChapters(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor") {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, COALESCE(deleted_at, ''), updated_at FROM chapters WHERE novel_id = ? AND deleted_at IS NOT NULL ORDER BY chapter_number`, r.PathValue("novelID"))
+	rows, err := s.db.QueryContext(r.Context(), `SELECT c.id, c.novel_id, c.chapter_number, c.title, c.body, c.revision, c.status, c.goal, c.key_events, c.suspense_hook, COALESCE(c.deleted_at, ''), c.updated_at,
+		CASE WHEN m.chapter_id IS NULL THEN 'missing' WHEN m.source_revision = c.revision THEN 'current' ELSE 'stale' END
+		FROM chapters c LEFT JOIN chapter_memories m ON m.chapter_id = c.id
+		WHERE c.novel_id = ? AND c.deleted_at IS NOT NULL ORDER BY c.chapter_number`, r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取已删除章节失败")
 		return
@@ -302,7 +310,7 @@ func (s *Server) listDeletedChapters(w http.ResponseWriter, r *http.Request) {
 	chapters := make([]Chapter, 0)
 	for rows.Next() {
 		var item Chapter
-		if err := rows.Scan(&item.ID, &item.NovelID, &item.Number, &item.Title, &item.Body, &item.Revision, &item.Status, &item.Goal, &item.KeyEvents, &item.SuspenseHook, &item.DeletedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.NovelID, &item.Number, &item.Title, &item.Body, &item.Revision, &item.Status, &item.Goal, &item.KeyEvents, &item.SuspenseHook, &item.DeletedAt, &item.UpdatedAt, &item.MemoryStatus); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取已删除章节失败")
 			return
 		}
@@ -417,6 +425,10 @@ func (s *Server) reorderChapters(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节顺序失败")
 		return
 	}
+	if err := task.RebuildNarrativeThreads(r.Context(), tx, novelID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+		return
+	}
 	orderedRows, err := tx.QueryContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, COALESCE(deleted_at, ''), updated_at FROM chapters WHERE novel_id = ? AND deleted_at IS NULL ORDER BY chapter_number`, novelID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取新章节顺序失败")
@@ -470,6 +482,10 @@ func (s *Server) deleteChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
 		return
 	}
+	if err := task.RebuildNarrativeThreads(r.Context(), tx, novelID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "移入回收站失败")
 		return
@@ -482,13 +498,32 @@ func (s *Server) restoreChapter(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor") {
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = NULL, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NOT NULL`, database.Now(), r.PathValue("chapterID"), r.PathValue("novelID"))
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节失败")
 		return
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = NULL, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NOT NULL`, database.Now(), r.PathValue("chapterID"), r.PathValue("novelID"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节失败")
+		return
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节失败")
+		return
+	}
+	if count == 0 {
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "已删除的章节不存在")
+		return
+	}
+	if err := task.RebuildNarrativeThreads(r.Context(), tx, r.PathValue("novelID")); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -531,7 +566,7 @@ func (s *Server) createChapter(w http.ResponseWriter, r *http.Request) {
 	if input.Title == "" {
 		input.Title = "第" + strconv.Itoa(number) + "章"
 	}
-	chapter := Chapter{ID: database.NewID(), NovelID: r.PathValue("novelID"), Number: number, Title: input.Title, Revision: 1, Status: "draft", UpdatedAt: database.Now()}
+	chapter := Chapter{ID: database.NewID(), NovelID: r.PathValue("novelID"), Number: number, Title: input.Title, Revision: 1, Status: "draft", UpdatedAt: database.Now(), MemoryStatus: "missing"}
 	_, err := s.db.ExecContext(r.Context(), `INSERT INTO chapters (id, novel_id, chapter_number, title, body, revision, status, updated_at) VALUES (?, ?, ?, ?, '', 1, 'draft', ?)`, chapter.ID, chapter.NovelID, chapter.Number, chapter.Title, chapter.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建章节失败")
@@ -572,7 +607,9 @@ func (s *Server) updateChapter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var current Chapter
-	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, r.PathValue("chapterID"), r.PathValue("novelID")).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.Goal, &current.KeyEvents, &current.SuspenseHook, &current.UpdatedAt)
+	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id) THEN 'missing' WHEN EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id AND m.source_revision = chapters.revision) THEN 'current' ELSE 'stale' END
+		FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, r.PathValue("chapterID"), r.PathValue("novelID")).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.Goal, &current.KeyEvents, &current.SuspenseHook, &current.UpdatedAt, &current.MemoryStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		tx.Rollback()
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
@@ -619,8 +656,17 @@ func (s *Server) updateChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "STALE_REVISION", "章节已被其他人更新，请比较后再保存")
 		return
 	}
+	if bodyChanged {
+		if err := task.RebuildNarrativeThreads(r.Context(), tx, current.NovelID); err != nil {
+			tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+			return
+		}
+	}
 	var chapter Chapter
-	if err := tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at FROM chapters WHERE id = ? AND deleted_at IS NULL`, current.ID).Scan(&chapter.ID, &chapter.NovelID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision, &chapter.Status, &chapter.Goal, &chapter.KeyEvents, &chapter.SuspenseHook, &chapter.UpdatedAt); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id) THEN 'missing' WHEN EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id AND m.source_revision = chapters.revision) THEN 'current' ELSE 'stale' END
+		FROM chapters WHERE id = ? AND deleted_at IS NULL`, current.ID).Scan(&chapter.ID, &chapter.NovelID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision, &chapter.Status, &chapter.Goal, &chapter.KeyEvents, &chapter.SuspenseHook, &chapter.UpdatedAt, &chapter.MemoryStatus); err != nil {
 		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取已保存章节失败")
 		return

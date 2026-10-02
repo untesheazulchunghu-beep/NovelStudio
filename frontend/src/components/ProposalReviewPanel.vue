@@ -59,7 +59,10 @@ const reviews = computed(() =>
       <p v-if="review.stale" class="stale-proposal-hint">
         当前章节版本为 v{{ review.currentRevision ?? '—' }}。差异视图将当前正文与提案比较。
       </p>
-      <p v-else-if="review.localDraftPending" class="stale-proposal-hint">
+      <p v-if="review.proposal.demoMode" class="stale-proposal-hint">
+        这是演示模式内容。应用后会更新正文，但不会生成章节记忆；配置真实模型后可手动刷新记忆。
+      </p>
+      <p v-if="review.localDraftPending" class="stale-proposal-hint">
         该章节有未保存的本地草稿；先保存或放弃草稿，再应用提案。
       </p>
       <details class="proposal-diff-toggle">

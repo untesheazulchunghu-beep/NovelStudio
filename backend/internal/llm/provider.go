@@ -101,6 +101,9 @@ func (p *Provider) TestConnection(ctx context.Context) error {
 func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string)) (string, error) {
 	if p.apiKey == "" {
 		text := "开发演示模式：任务已进入生成流程。请在后端配置 LLM_API_KEY、LLM_MODEL 和 LLM_BASE_URL 后启用真实模型生成。"
+		if strings.Contains(prompt, "工作流节点（review）") {
+			text = "审稿结论：通过"
+		}
 		emit(text)
 		return text, nil
 	}
@@ -108,13 +111,22 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
 		endpoint += "/chat/completions"
 	}
+	system := "你是一位严谨的中文小说创作搭档。遵守用户给定的设定，只返回可作为章节正文的修改提案，不要声称已经保存内容。"
+	switch {
+	case strings.Contains(prompt, "请只输出章节记忆"):
+		system = "你是一位严谨的中文小说记忆整理助手。不要创作或重写章节正文。仅根据用户给出的当前章节内容提取长期记忆；严格按用户指定的摘要、出场人物、新增设定、伏笔变化格式输出，缺少内容时留空。"
+	case strings.Contains(prompt, "审稿任务："):
+		system = "你是一位严谨的中文小说审稿人。逐条核对当前正文与关键事件清单，严格按用户指定格式输出判断、逐字引文和位置。引文必须是正文中的连续原文；不要生成或修改章节正文。"
+	case strings.Contains(prompt, "工作流节点（review）"):
+		system = "你是一位严谨的中文小说审稿人。只按用户要求检查此前输出并给出审稿结论，不要输出或修改章节正文。"
+	}
 	requestBody := map[string]any{
 		"model":       p.model,
 		"stream":      true,
 		"temperature": p.temperature,
 		"messages": []map[string]string{{
 			"role":    "system",
-			"content": "你是一位严谨的中文小说创作搭档。遵守用户给定的设定，只返回可作为章节正文的修改提案，不要声称已经保存内容。",
+			"content": system,
 		}, {
 			"role":    "user",
 			"content": prompt,

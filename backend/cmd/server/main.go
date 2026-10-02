@@ -48,6 +48,7 @@ func main() {
 	}
 	application := novel.NewServer(db, auth.NewSessions(settings.SessionSecret, settings.SessionSecure), manager, settings.AllowedOrigins, staticDir)
 	application.SetLLMRuntime(modelRuntime)
+	application.SetContextBudget(settings.ContextBudgetRunes)
 	server := &http.Server{
 		Addr:              settings.Addr,
 		Handler:           application.Handler(),

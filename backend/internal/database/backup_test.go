@@ -35,6 +35,13 @@ func TestCreateBackupIncludesCommittedWALData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer snapshot.Close()
+	var integrity string
+	if err := snapshot.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		t.Fatal(err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("backup integrity check failed: %q", integrity)
+	}
 	var body string
 	if err := snapshot.QueryRow(`SELECT body FROM notes`).Scan(&body); err != nil {
 		t.Fatal(err)

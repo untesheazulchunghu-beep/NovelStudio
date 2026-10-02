@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -101,6 +102,67 @@ func TestProviderDoesNotExposeServerSentErrorDetails(t *testing.T) {
 	}
 	if strings.Contains(userFacing.UserMessage(), "private upstream detail") {
 		t.Fatalf("user-facing message leaked upstream details: %q", userFacing.UserMessage())
+	}
+}
+
+func TestProviderUsesTaskSpecificSystemPrompts(t *testing.T) {
+	tests := []struct {
+		name          string
+		prompt        string
+		systemMust    string
+		systemMustNot string
+	}{
+		{
+			name:          "chapter memory",
+			prompt:        "请只输出章节记忆\n第1章\n正文\n摘要：",
+			systemMust:    "仅根据用户给出的当前章节内容提取长期记忆",
+			systemMustNot: "只返回可作为章节正文的修改提案",
+		},
+		{
+			name:          "key-event review",
+			prompt:        "审稿任务：\n逐条核对关键事件和正文",
+			systemMust:    "逐条核对当前正文与关键事件清单",
+			systemMustNot: "只返回可作为章节正文的修改提案",
+		},
+		{
+			name:          "workflow review",
+			prompt:        "工作流节点（review）：\n审稿结论：通过",
+			systemMust:    "给出审稿结论",
+			systemMustNot: "只返回可作为章节正文的修改提案",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Messages []struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+					return
+				}
+				if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" {
+					t.Errorf("unexpected chat messages: %#v", body.Messages)
+					return
+				}
+				if !strings.Contains(body.Messages[0].Content, test.systemMust) || strings.Contains(body.Messages[0].Content, test.systemMustNot) {
+					t.Errorf("wrong system prompt: %q", body.Messages[0].Content)
+				}
+				if body.Messages[1].Content != test.prompt {
+					t.Errorf("user prompt = %q, want %q", body.Messages[1].Content, test.prompt)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			if _, err := New(server.URL, "secret", "test-model").Generate(context.Background(), test.prompt, func(string) {}); err != nil {
+				t.Fatalf("Generate returned an unexpected error: %v", err)
+			}
+		})
 	}
 }
 

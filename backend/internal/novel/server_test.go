@@ -261,6 +261,10 @@ func TestSaaSNovelAuthoringFlow(t *testing.T) {
 	requestJSON(t, ownerClient, http.MethodPost, webServer.URL+"/api/v1/workspaces/"+workspaceID+"/members", map[string]string{"email": "reader@example.test", "role": "viewer"}, http.StatusCreated)
 	requestJSON(t, secondClient, http.MethodPost, webServer.URL+"/api/v1/novels/"+novelID+"/graph/nodes", map[string]any{"kind": "character", "label": "越权写入", "summary": "", "x": 0, "y": 0}, http.StatusForbidden)
 	requestJSON(t, secondClient, http.MethodDelete, webServer.URL+"/api/v1/novels/"+novelID+"/workflows/"+workflowID, nil, http.StatusForbidden)
+	requestJSON(t, ownerClient, http.MethodPut, webServer.URL+"/api/v1/novels/"+novelID+"/chapters/"+chapterID, map[string]any{
+		"expectedRevision": int(chapter["revision"].(float64)), "title": chapter["title"], "body": chapter["body"],
+		"goal": "沈知遥在雾港追查失踪案。", "keyEvents": chapter["keyEvents"], "suspenseHook": chapter["suspenseHook"],
+	}, http.StatusOK)
 
 	taskResponse := requestJSON(t, ownerClient, http.MethodPost, webServer.URL+"/api/v1/novels/"+novelID+"/tasks/batch", map[string]any{"chapterIds": []string{chapterID}, "instruction": "续写一个雨夜相遇的开场。"}, http.StatusAccepted)
 	taskID := taskResponse["id"].(string)

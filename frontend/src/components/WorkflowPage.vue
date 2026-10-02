@@ -19,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [workflowId: string]
   create: []
+  createTemplate: [template: string]
   save: []
   delete: []
   run: []
@@ -109,6 +110,13 @@ function removeWorkflowNode(id: string) {
           <option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option>
         </select>
         <button class="button secondary" :disabled="!canEdit" @click="emit('create')">＋ 新流程</button>
+        <button class="button secondary" :disabled="!canEdit" @click="emit('createTemplate', '章节起草')">
+          章节起草
+        </button>
+        <button class="button secondary" :disabled="!canEdit" @click="emit('createTemplate', '起草 → 审稿 → 修改')">
+          起草 → 审稿 → 修改
+        </button>
+        <button class="button secondary" :disabled="!canEdit" @click="emit('createTemplate', '只润色')">只润色</button>
         <button class="button primary" :disabled="!canEdit" @click="emit('save')">保存流程</button>
       </div>
     </div>

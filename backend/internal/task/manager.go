@@ -17,15 +17,16 @@ import (
 )
 
 type Chapter struct {
-	ID           string
-	Number       int
-	Title        string
-	Body         string
-	Revision     int
-	Goal         string
-	KeyEvents    string
-	SuspenseHook string
-	PreviousTail string
+	ID              string
+	Number          int
+	Title           string
+	Body            string
+	Revision        int
+	Goal            string
+	KeyEvents       string
+	SuspenseHook    string
+	PreviousTail    string
+	InjectedContext string
 }
 
 type Request struct {
@@ -40,10 +41,15 @@ type Request struct {
 	WritingGuide    string
 	ApprovalMode    string
 	Chapters        []Chapter
+	Nodes           []WorkflowNode
+	NodeResults     []NodeResult
+	Kind            string          `json:"Kind,omitempty"`
+	ReviewOutcomes  []ReviewOutcome `json:"ReviewOutcomes,omitempty"`
 }
 
 type ContextManifest struct {
 	Sources            []string `json:"sources,omitempty"`
+	Dropped            []string `json:"dropped,omitempty"`
 	TruncatedEntities  int      `json:"truncatedEntities,omitempty"`
 	TruncatedRelations int      `json:"truncatedRelations,omitempty"`
 }
@@ -72,6 +78,7 @@ type Manager struct {
 	db        *sql.DB
 	generator llm.Generator
 	mu        sync.Mutex
+	eventMu   sync.Mutex
 	subs      map[string]map[chan Event]struct{}
 	cancels   map[string]context.CancelFunc
 	sequences map[string]int64
@@ -245,11 +252,20 @@ func (m *Manager) run(ctx context.Context, request Request) {
 		"workflowName":       request.WorkflowName,
 		"demoMode":           m.demoMode(),
 		"contextSources":     request.ContextManifest.Sources,
+		"droppedContext":     request.ContextManifest.Dropped,
 		"truncatedEntities":  request.ContextManifest.TruncatedEntities,
 		"truncatedRelations": request.ContextManifest.TruncatedRelations,
 	})
 	for _, chapter := range request.Chapters {
 		m.emit(request.ID, "chapter.queued", map[string]any{"chapterId": chapter.ID, "chapterNumber": chapter.Number, "title": chapter.Title})
+	}
+	if len(request.Nodes) > 0 {
+		m.runWorkflowGraph(ctx, request)
+		return
+	}
+	if request.Kind == "review" {
+		m.runReviewChecklist(ctx, request)
+		return
 	}
 	var previousGenerated Chapter
 	hasPreviousGenerated := false
@@ -296,46 +312,14 @@ func (m *Manager) run(ctx context.Context, request Request) {
 			updateProgress(index, chapter)
 			continue
 		}
-		proposalID := database.NewID()
-		applyAutomatically := request.ApprovalMode == "auto" && !demoMode
-		status := "pending"
-		resolvedAt := any(nil)
-		if applyAutomatically {
-			status = "applied"
-			resolvedAt = database.Now()
-		}
-		tx, err := m.db.Begin()
+		proposalID, applyAutomatically, err := m.persistChapterOutput(ctx, request, chapter, text, demoMode)
 		if err != nil {
-			recordFailure(chapter, "保存提案失败")
-			updateProgress(index, chapter)
-			continue
-		}
-		_, err = tx.Exec(`INSERT INTO proposals (id, task_id, novel_id, chapter_id, base_revision, proposed_title, proposed_text, status, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			proposalID, request.ID, request.NovelID, chapter.ID, chapter.Revision, chapter.Title, text, status, database.Now(), resolvedAt)
-		if err == nil && applyAutomatically {
-			_, err = tx.Exec(`INSERT INTO chapter_revisions (id, novel_id, chapter_id, revision, title, body, source, edited_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 'agent-auto', ?, ?)`, database.NewID(), request.NovelID, chapter.ID, chapter.Revision, chapter.Title, chapter.Body, request.UserID, database.Now())
-			if err == nil {
-				var result sql.Result
-				result, err = tx.Exec(`UPDATE chapters SET title = ?, body = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`, chapter.Title, text, database.Now(), chapter.ID, chapter.Revision)
-				if err == nil {
-					var count int64
-					count, err = result.RowsAffected()
-					if err == nil && count != 1 {
-						err = errors.New("chapter revision changed during generation")
-					}
-				}
+			if errors.Is(err, context.Canceled) {
+				m.emit(request.ID, "chapter.canceled", map[string]any{"chapterId": chapter.ID, "chapterNumber": chapter.Number})
+				m.finish(request.ID, "canceled", "任务已取消")
+				return
 			}
-		}
-		if err != nil {
-			tx.Rollback()
-			log.Printf("task %s chapter %d proposal persistence failed: %v", request.ID, chapter.Number, err)
-			recordFailure(chapter, "保存提案失败，章节可能已被其他编辑更新")
-			updateProgress(index, chapter)
-			continue
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("task %s chapter %d proposal commit failed: %v", request.ID, chapter.Number, err)
-			recordFailure(chapter, "保存提案失败")
+			recordFailure(chapter, err.Error())
 			updateProgress(index, chapter)
 			continue
 		}
@@ -354,6 +338,25 @@ func (m *Manager) run(ctx context.Context, request Request) {
 		return
 	}
 	m.finish(request.ID, "completed", "")
+}
+
+// ComposeChapterMemory asks the injected generator for the four memory fields.
+func (m *Manager) ComposeChapterMemory(ctx context.Context, chapter Chapter, body string) (ChapterMemory, error) {
+	raw, err, demoMode := m.generate(ctx, MemoryPrompt(chapter, body), func(string) {})
+	if err != nil {
+		return ChapterMemory{}, err
+	}
+	if demoMode {
+		return ChapterMemory{}, errors.New("章节记忆暂不可用：当前处于演示模式")
+	}
+	if !ValidChapterMemoryOutput(raw) {
+		return ChapterMemory{}, errors.New("章节记忆格式无效")
+	}
+	return ParseChapterMemory(raw), nil
+}
+
+func (m *Manager) DemoMode() bool {
+	return m.demoMode()
 }
 
 func (m *Manager) demoMode() bool {
@@ -391,7 +394,11 @@ func buildPrompt(request Request, chapter Chapter) string {
 		prompt.WriteString(guide)
 	}
 	prompt.WriteString("\n\n小说资料与知识图谱：\n")
-	prompt.WriteString(request.Context)
+	contextText := chapter.InjectedContext
+	if strings.TrimSpace(contextText) == "" {
+		contextText = request.Context
+	}
+	prompt.WriteString(contextText)
 	if request.WorkflowName != "" {
 		prompt.WriteString("\n\n工作流：")
 		prompt.WriteString(request.WorkflowName)
@@ -460,10 +467,15 @@ func (m *Manager) emit(taskID, eventType string, data map[string]any) {
 		log.Printf("task %s event encoding failed: %v", taskID, err)
 		return
 	}
-	m.mu.Lock()
+	// Keep sequence allocation, persistence, and live delivery together. Token
+	// batching uses a timer and can finish concurrently with a chapter event;
+	// separating these steps lets a subscriber receive sequence 42 before 41
+	// and then discard the older event as a duplicate. Use a dedicated lock so
+	// a slow database write does not block cancellation or subscription changes.
+	m.eventMu.Lock()
+	defer m.eventMu.Unlock()
 	m.sequences[taskID]++
 	sequence := m.sequences[taskID]
-	m.mu.Unlock()
 	createdAt := database.Now()
 	if _, err := m.db.Exec(`INSERT INTO task_events (task_id, sequence, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)`, taskID, sequence, eventType, string(payload), createdAt); err != nil {
 		log.Printf("task %s event persistence failed: %v", taskID, err)

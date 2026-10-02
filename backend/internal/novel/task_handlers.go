@@ -17,8 +17,10 @@ import (
 )
 
 type generationInput struct {
-	ChapterIDs  []string `json:"chapterIds"`
-	Instruction string   `json:"instruction"`
+	ChapterIDs  []string            `json:"chapterIds"`
+	Instruction string              `json:"instruction"`
+	Kind        string              `json:"kind"`
+	Nodes       []task.WorkflowNode `json:"-"`
 }
 
 type Proposal struct {
@@ -31,6 +33,7 @@ type Proposal struct {
 	Title         string `json:"title"`
 	Text          string `json:"text"`
 	Status        string `json:"status"`
+	DemoMode      bool   `json:"demoMode"`
 	CreatedAt     string `json:"createdAt"`
 }
 
@@ -43,12 +46,85 @@ func (s *Server) createBatchTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	item, err := s.startGeneration(r.Context(), r.PathValue("novelID"), userID, input, "batch", "", "")
+	kind := "batch"
+	switch strings.TrimSpace(input.Kind) {
+	case "", "batch":
+	case "review":
+		if s.tasks.DemoMode() {
+			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再生成关键事件审稿清单")
+			return
+		}
+		kind = "review"
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_TASK", "未知的任务类型")
+		return
+	}
+	item, err := s.startGeneration(r.Context(), r.PathValue("novelID"), userID, input, kind, "", "")
 	if err != nil {
 		writeError(w, err.status, err.code, err.message)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, item)
+}
+
+func (s *Server) refreshChapterMemory(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.userID(w, r)
+	novelID := r.PathValue("novelID")
+	chapterID := r.PathValue("chapterID")
+	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
+		return
+	}
+	if s.tasks.DemoMode() {
+		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再刷新章节记忆")
+		return
+	}
+	var chapter task.Chapter
+	err := s.db.QueryRowContext(r.Context(), `SELECT id, chapter_number, title, body, revision FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).
+		Scan(&chapter.ID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
+		return
+	}
+	if strings.TrimSpace(chapter.Body) == "" {
+		writeError(w, http.StatusBadRequest, "EMPTY_CHAPTER", "章节正文为空，无需生成记忆")
+		return
+	}
+	memory, err := s.tasks.ComposeChapterMemory(r.Context(), chapter, chapter.Body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "MEMORY_GENERATION_FAILED", "生成章节记忆失败，请稍后重试")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节记忆失败")
+		return
+	}
+	defer tx.Rollback()
+	var revision int
+	if err := tx.QueryRowContext(r.Context(), `SELECT revision FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).Scan(&revision); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
+		return
+	}
+	if revision != chapter.Revision {
+		writeError(w, http.StatusConflict, "STALE_REVISION", "章节在生成记忆期间已更新，请刷新后重试")
+		return
+	}
+	if err := task.SaveChapterMemory(r.Context(), tx, novelID, chapterID, chapter.Number, chapter.Revision, memory); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节记忆失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节记忆失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"memoryStatus": "current"})
 }
 
 func (s *Server) runWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -61,12 +137,20 @@ func (s *Server) runWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workflowID := r.PathValue("workflowID")
-	name, steps, exists := s.workflowPrompt(r, workflowID, r.PathValue("novelID"))
+	name, definition, exists := s.loadWorkflow(r, workflowID, r.PathValue("novelID"))
 	if !exists {
 		writeError(w, http.StatusNotFound, "WORKFLOW_NOT_FOUND", "工作流不存在或定义无效")
 		return
 	}
-	input.Instruction = strings.TrimSpace(input.Instruction + "\n\n" + steps)
+	ordered := orderedWorkflowNodes(definition)
+	if len(ordered) != len(definition.Nodes) {
+		writeError(w, http.StatusNotFound, "WORKFLOW_NOT_FOUND", "工作流不存在或定义无效")
+		return
+	}
+	input.Nodes = make([]task.WorkflowNode, len(ordered))
+	for index, node := range ordered {
+		input.Nodes[index] = task.WorkflowNode{ID: node.ID, Kind: node.Kind, Title: node.Title, Prompt: node.Prompt}
+	}
 	item, err := s.startGeneration(r.Context(), r.PathValue("novelID"), userID, input, "workflow", workflowID, name)
 	if err != nil {
 		writeError(w, err.status, err.code, err.message)
@@ -136,75 +220,98 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
 	defer graphTx.Rollback()
-	var totalEntities, totalRelations int
-	if err := graphTx.QueryRowContext(ctx, `SELECT COUNT(*) FROM graph_nodes WHERE novel_id = ?`, novelID).Scan(&totalEntities); err != nil {
-		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱数量失败"}
-	}
-	if err := graphTx.QueryRowContext(ctx, `SELECT COUNT(*) FROM graph_edges WHERE novel_id = ?`, novelID).Scan(&totalRelations); err != nil {
-		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识关系数量失败"}
-	}
-	graphRows, err := graphTx.QueryContext(ctx, `SELECT kind, label, summary FROM graph_nodes WHERE novel_id = ? ORDER BY kind, label LIMIT 80`, novelID)
+	graphRows, err := graphTx.QueryContext(ctx, `SELECT kind, label, summary FROM graph_nodes WHERE novel_id = ? ORDER BY kind, label`, novelID)
 	if err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
-	var knowledge strings.Builder
-	knowledge.WriteString("小说：《" + title + "》\n题材：" + genre + "\n简介：" + summary + "\n")
-	includedEntities := 0
+	entities := make([]task.StoredEntity, 0)
 	for graphRows.Next() {
-		var kind, label, nodeSummary string
-		if err := graphRows.Scan(&kind, &label, &nodeSummary); err != nil {
+		var entity task.StoredEntity
+		if err := graphRows.Scan(&entity.Kind, &entity.Label, &entity.Summary); err != nil {
 			graphRows.Close()
 			return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 		}
-		knowledge.WriteString(kind + "：" + label + "。" + nodeSummary + "\n")
-		contextSources = append(contextSources, graphNodeKindLabel(kind)+"："+label)
-		includedEntities++
+		entities = append(entities, entity)
 	}
 	if err := graphRows.Err(); err != nil {
 		graphRows.Close()
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
 	graphRows.Close()
-	edgeRows, err := graphTx.QueryContext(ctx, `SELECT source_node.label, edge.relation, target_node.label, edge.summary FROM graph_edges edge JOIN graph_nodes source_node ON source_node.id = edge.source_id JOIN graph_nodes target_node ON target_node.id = edge.target_id WHERE edge.novel_id = ? ORDER BY edge.created_at LIMIT 160`, novelID)
+	edgeRows, err := graphTx.QueryContext(ctx, `SELECT source_node.label, edge.relation, target_node.label, edge.summary FROM graph_edges edge JOIN graph_nodes source_node ON source_node.id = edge.source_id JOIN graph_nodes target_node ON target_node.id = edge.target_id WHERE edge.novel_id = ? ORDER BY edge.created_at, edge.id`, novelID)
 	if err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识关系失败"}
 	}
-	includedRelations := 0
+	relations := make([]task.StoredRelation, 0)
 	for edgeRows.Next() {
-		var source, relation, target, edgeSummary string
-		if err := edgeRows.Scan(&source, &relation, &target, &edgeSummary); err != nil {
+		var relation task.StoredRelation
+		if err := edgeRows.Scan(&relation.Source, &relation.Relation, &relation.Target, &relation.Summary); err != nil {
 			edgeRows.Close()
 			return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识关系失败"}
 		}
-		knowledge.WriteString(source + " —" + relation + "→ " + target + "。" + edgeSummary + "\n")
-		contextSources = append(contextSources, "关系："+source+" —"+relation+"→ "+target)
-		includedRelations++
+		relations = append(relations, relation)
 	}
 	if err := edgeRows.Err(); err != nil {
 		edgeRows.Close()
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识关系失败"}
 	}
 	edgeRows.Close()
+	memories, err := task.LoadChapterMemories(ctx, graphTx, novelID)
+	if err != nil {
+		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取章节记忆失败"}
+	}
+	threads, err := task.LoadNarrativeThreads(ctx, graphTx, novelID)
+	if err != nil {
+		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取伏笔失败"}
+	}
 	if err := graphTx.Commit(); err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
-	truncatedEntities := totalEntities - includedEntities
-	if truncatedEntities < 0 {
-		truncatedEntities = 0
+	header := "小说：《" + title + "》\n题材：" + genre + "\n简介：" + summary
+	budget := s.contextBudgetRunes()
+	included := make([]string, 0)
+	dropped := make([]string, 0)
+	seenIncluded := make(map[string]bool)
+	seenDropped := make(map[string]bool)
+	truncatedEntities := 0
+	truncatedRelations := 0
+	knowledge := ""
+	for index := range chapters {
+		chapter := &chapters[index]
+		blueprint := strings.Join([]string{chapter.Title, chapter.Goal, chapter.KeyEvents, chapter.SuspenseHook}, "\n")
+		assembled := task.AssembleChapterContext(budget, chapter.Number, blueprint, header, memories, entities, relations, threads)
+		chapter.InjectedContext = assembled.Text
+		if index == 0 {
+			knowledge = assembled.Text
+		}
+		for _, label := range assembled.Included {
+			if !seenIncluded[label] {
+				seenIncluded[label] = true
+				included = append(included, label)
+			}
+		}
+		for _, label := range assembled.Dropped {
+			if !seenDropped[label] {
+				seenDropped[label] = true
+				dropped = append(dropped, label)
+			}
+		}
+		truncatedEntities += assembled.TruncatedEntities
+		truncatedRelations += assembled.TruncatedRelations
 	}
-	truncatedRelations := totalRelations - includedRelations
-	if truncatedRelations < 0 {
-		truncatedRelations = 0
-	}
+	contextSources = append(contextSources, included...)
 	taskID := database.NewID()
 	now := database.Now()
 	request := task.Request{
 		ID: taskID, NovelID: novelID, WorkflowID: workflowID, WorkflowName: workflowName, UserID: userID,
-		Instruction: strings.TrimSpace(input.Instruction), Context: knowledge.String(),
+		Instruction: strings.TrimSpace(input.Instruction), Context: knowledge,
 		ContextManifest: task.ContextManifest{
-			Sources: contextSources, TruncatedEntities: truncatedEntities, TruncatedRelations: truncatedRelations,
+			Sources: contextSources, Dropped: dropped, TruncatedEntities: truncatedEntities, TruncatedRelations: truncatedRelations,
 		},
-		WritingGuide: writingGuide, ApprovalMode: approvalMode, Chapters: chapters,
+		WritingGuide: writingGuide, ApprovalMode: approvalMode, Chapters: chapters, Nodes: input.Nodes, Kind: kind,
+	}
+	if kind == "review" {
+		request.Nodes = nil
 	}
 	requestJSON, err := json.Marshal(request)
 	if err != nil {
@@ -243,23 +350,6 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	return item, nil
 }
 
-func graphNodeKindLabel(kind string) string {
-	switch kind {
-	case "character":
-		return "人物"
-	case "place":
-		return "地点"
-	case "faction":
-		return "组织"
-	case "item":
-		return "物品"
-	case "concept":
-		return "设定"
-	default:
-		return "实体"
-	}
-}
-
 func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
 	if !ok {
@@ -293,20 +383,36 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "TASK_ALREADY_RETRIED", "该任务已经创建过重试任务")
 		return
 	}
+	if kind == "review" && s.tasks.DemoMode() {
+		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再重试关键事件审稿")
+		return
+	}
 	var request task.Request
 	if requestJSON == "" || json.Unmarshal([]byte(requestJSON), &request) != nil {
 		writeError(w, http.StatusConflict, "TASK_REQUEST_UNAVAILABLE", "该任务缺少可恢复的请求快照，请重新发起生成")
 		return
 	}
+	reviewed := make(map[string]bool, len(request.ReviewOutcomes))
+	if kind == "review" {
+		for _, outcome := range request.ReviewOutcomes {
+			reviewed[outcome.ChapterID] = true
+		}
+	}
 	chapters := make([]task.Chapter, 0, len(request.Chapters))
 	for index, chapter := range request.Chapters {
-		var hasProposal bool
-		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM proposals WHERE task_id = ? AND chapter_id = ?)`, originalID, chapter.ID).Scan(&hasProposal); err != nil {
-			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节任务状态失败")
-			return
-		}
-		if hasProposal {
-			continue
+		if kind == "review" {
+			if reviewed[chapter.ID] {
+				continue
+			}
+		} else {
+			var hasProposal bool
+			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM proposals WHERE task_id = ? AND chapter_id = ?)`, originalID, chapter.ID).Scan(&hasProposal); err != nil {
+				writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节任务状态失败")
+				return
+			}
+			if hasProposal {
+				continue
+			}
 		}
 		if index > 0 && request.Chapters[index-1].Number+1 == chapter.Number {
 			var previousText string
@@ -586,7 +692,7 @@ func (s *Server) regenerateStaleProposal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	item, failure := s.startGeneration(r.Context(), novelID, userID, generationInput{
-		ChapterIDs: []string{chapterID}, Instruction: original.Instruction,
+		ChapterIDs: []string{chapterID}, Instruction: original.Instruction, Nodes: original.Nodes,
 	}, originalKind, "", original.WorkflowName)
 	if failure != nil {
 		writeError(w, failure.status, failure.code, failure.message)
@@ -600,7 +706,7 @@ func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor", "reviewer", "viewer") {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT p.id, p.task_id, p.novel_id, p.chapter_id, c.chapter_number, p.base_revision, p.proposed_title, p.proposed_text, p.status, p.created_at FROM proposals p JOIN chapters c ON c.id = p.chapter_id AND c.deleted_at IS NULL WHERE p.novel_id = ? ORDER BY p.created_at DESC LIMIT 100`, r.PathValue("novelID"))
+	rows, err := s.db.QueryContext(r.Context(), `SELECT p.id, p.task_id, p.novel_id, p.chapter_id, c.chapter_number, p.base_revision, p.proposed_title, p.proposed_text, p.status, p.demo_mode, p.created_at FROM proposals p JOIN chapters c ON c.id = p.chapter_id AND c.deleted_at IS NULL WHERE p.novel_id = ? ORDER BY p.created_at DESC LIMIT 100`, r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取提案失败")
 		return
@@ -609,7 +715,7 @@ func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
 	proposals := make([]Proposal, 0)
 	for rows.Next() {
 		var item Proposal
-		if err := rows.Scan(&item.ID, &item.TaskID, &item.NovelID, &item.ChapterID, &item.ChapterNumber, &item.BaseRevision, &item.Title, &item.Text, &item.Status, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.NovelID, &item.ChapterID, &item.ChapterNumber, &item.BaseRevision, &item.Title, &item.Text, &item.Status, &item.DemoMode, &item.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取提案失败")
 			return
 		}
@@ -624,66 +730,126 @@ func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
-	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor", "reviewer") {
+	novelID := r.PathValue("novelID")
+	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor", "reviewer") {
 		return
 	}
 	proposalID := r.PathValue("proposalID")
+	var chapterID, title, text, status string
+	var baseRevision int
+	var demoMode bool
+	err := s.db.QueryRowContext(r.Context(), `SELECT chapter_id, base_revision, proposed_title, proposed_text, status, demo_mode FROM proposals WHERE id = ? AND novel_id = ?`, proposalID, novelID).Scan(&chapterID, &baseRevision, &title, &text, &status, &demoMode)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "提案不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取提案失败")
+		return
+	}
+	if status != "pending" {
+		writeError(w, http.StatusConflict, "PROPOSAL_RESOLVED", "该提案已处理")
+		return
+	}
+	var current Chapter
+	err = s.db.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, updated_at FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
+		return
+	}
+	if current.Revision != baseRevision {
+		writeError(w, http.StatusConflict, "STALE_REVISION", "章节已被更新，请刷新后重新生成提案")
+		return
+	}
+	storeMemory := !demoMode && !s.tasks.DemoMode()
+	var memory task.ChapterMemory
+	if storeMemory {
+		memory, err = s.tasks.ComposeChapterMemory(r.Context(), task.Chapter{
+			ID: current.ID, Number: current.Number, Title: title, Body: text,
+		}, text)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				writeError(w, http.StatusRequestTimeout, "MEMORY_GENERATION_CANCELED", "生成章节记忆已取消，章节尚未应用")
+				return
+			}
+			// Applying a reviewed proposal must remain possible when the model
+			// cannot produce the optional memory record. The chapter is still
+			// finalized; the memory status stays missing/stale and can be
+			// refreshed explicitly later.
+			storeMemory = false
+		}
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
 		return
 	}
-	var chapterID, title, text, status string
-	var baseRevision int
-	err = tx.QueryRowContext(r.Context(), `SELECT chapter_id, base_revision, proposed_title, proposed_text, status FROM proposals WHERE id = ? AND novel_id = ?`, proposalID, r.PathValue("novelID")).Scan(&chapterID, &baseRevision, &title, &text, &status)
+	defer tx.Rollback()
+	var currentStatus string
+	var currentBase int
+	err = tx.QueryRowContext(r.Context(), `SELECT status, base_revision FROM proposals WHERE id = ? AND novel_id = ?`, proposalID, novelID).Scan(&currentStatus, &currentBase)
 	if errors.Is(err, sql.ErrNoRows) {
-		tx.Rollback()
 		writeError(w, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "提案不存在")
 		return
 	}
 	if err != nil {
-		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取提案失败")
 		return
 	}
-	if status != "pending" {
-		tx.Rollback()
+	if currentStatus != "pending" {
 		writeError(w, http.StatusConflict, "PROPOSAL_RESOLVED", "该提案已处理")
 		return
 	}
-	var current Chapter
-	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, updated_at FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, r.PathValue("novelID")).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.UpdatedAt)
+	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, updated_at FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		tx.Rollback()
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
 		return
 	}
 	if err != nil {
-		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
 		return
 	}
-	if current.Revision != baseRevision {
-		tx.Rollback()
+	if current.Revision != baseRevision || currentBase != baseRevision {
 		writeError(w, http.StatusConflict, "STALE_REVISION", "章节已被更新，请刷新后重新生成提案")
 		return
 	}
 	if err := storeChapterRevision(tx, current, userID, "proposal"); err != nil {
-		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录章节版本失败")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `UPDATE chapters SET title = ?, body = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND novel_id = ? AND revision = ?`, title, text, database.Now(), chapterID, r.PathValue("novelID"), baseRevision)
+	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET title = ?, body = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND novel_id = ? AND revision = ?`, title, text, database.Now(), chapterID, novelID, baseRevision)
 	if err != nil {
-		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `UPDATE proposals SET status = 'applied', resolved_at = ? WHERE id = ?`, database.Now(), proposalID)
+	updated, err := result.RowsAffected()
+	if err != nil || updated != 1 {
+		writeError(w, http.StatusConflict, "STALE_REVISION", "章节已被更新，请刷新后重新生成提案")
+		return
+	}
+	proposalResult, err := tx.ExecContext(r.Context(), `UPDATE proposals SET status = 'applied', resolved_at = ? WHERE id = ? AND status = 'pending'`, database.Now(), proposalID)
 	if err != nil {
-		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
 		return
+	}
+	proposalUpdated, err := proposalResult.RowsAffected()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
+		return
+	}
+	if proposalUpdated != 1 {
+		writeError(w, http.StatusConflict, "PROPOSAL_RESOLVED", "该提案已处理")
+		return
+	}
+	if storeMemory {
+		if err := task.SaveChapterMemory(r.Context(), tx, novelID, chapterID, current.Number, current.Revision+1, memory); err != nil {
+			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节记忆失败")
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")

@@ -1603,6 +1603,11 @@ select {
   padding: 0 4px;
   color: #c7cec7;
 }
+.memory-state {
+  align-self: center;
+  color: #5c7868;
+  font-size: 12px;
+}
 .manuscript-textarea {
   width: 100%;
   min-height: 365px;

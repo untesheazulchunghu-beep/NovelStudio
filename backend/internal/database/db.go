@@ -81,6 +81,21 @@ var migrations = []migration{
 		name:    "legacy-columns",
 		apply:   migrateLegacyColumns,
 	},
+	{
+		version: 2,
+		name:    "chapter-memory",
+		apply:   migrateChapterMemory,
+	},
+	{
+		version: 3,
+		name:    "chapter-memory-source-revision",
+		apply:   migrateChapterMemorySourceRevision,
+	},
+	{
+		version: 4,
+		name:    "proposal-demo-mode",
+		apply:   migrateProposalDemoMode,
+	},
 }
 
 type columnMigration struct {
@@ -155,6 +170,43 @@ func migrateLegacyColumns(tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func migrateChapterMemory(tx *sql.Tx) error {
+	for _, statement := range chapterMemoryStatements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateChapterMemorySourceRevision(tx *sql.Tx) error {
+	exists, err := columnExists(tx, "chapter_memories", "source_revision")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.Exec(`ALTER TABLE chapter_memories ADD COLUMN source_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	// Older versions did not record which body revision produced a memory, so
+	// leave those rows stale instead of treating an unknown snapshot as current.
+	_, err = tx.Exec(`DELETE FROM narrative_threads`)
+	return err
+}
+
+func migrateProposalDemoMode(tx *sql.Tx) error {
+	exists, err := columnExists(tx, "proposals", "demo_mode")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.Exec(`ALTER TABLE proposals ADD COLUMN demo_mode INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 type queryer interface {
@@ -350,6 +402,7 @@ var schemaStatements = []string{
     proposed_title TEXT NOT NULL,
     proposed_text TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'rejected')),
+    demo_mode INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     resolved_at TEXT
 );`,
@@ -360,4 +413,40 @@ var schemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_tasks_novel ON tasks(novel_id, created_at DESC);`,
 	`CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, sequence);`,
 	`CREATE INDEX IF NOT EXISTS idx_proposals_novel_status ON proposals(novel_id, status, created_at DESC);`,
+}
+
+// chapterMemoryStatements create the chapter-memory tables. Fresh databases
+// run them from schemaStatements; existing databases run them from migration
+// version 2. Both use IF NOT EXISTS so a second startup does not duplicate rows.
+var chapterMemoryStatements = []string{
+	`CREATE TABLE IF NOT EXISTS chapter_memories (
+    chapter_id TEXT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
+    novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+    chapter_number INTEGER NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    characters TEXT NOT NULL DEFAULT '',
+    new_settings TEXT NOT NULL DEFAULT '',
+    foreshadowing TEXT NOT NULL DEFAULT '',
+    source_revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);`,
+	`CREATE TABLE IF NOT EXISTS narrative_threads (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    subjects TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('open', 'recovered')),
+    opened_chapter_id TEXT NOT NULL,
+    opened_chapter_number INTEGER NOT NULL,
+    updated_chapter_id TEXT NOT NULL,
+    updated_chapter_number INTEGER NOT NULL,
+    UNIQUE (novel_id, name)
+);`,
+	`CREATE INDEX IF NOT EXISTS idx_chapter_memories_novel ON chapter_memories(novel_id, chapter_number);`,
+	`CREATE INDEX IF NOT EXISTS idx_narrative_threads_novel ON narrative_threads(novel_id, status);`,
+}
+
+func init() {
+	schemaStatements = append(schemaStatements, chapterMemoryStatements...)
 }

@@ -12,18 +12,19 @@ import (
 )
 
 type Config struct {
-	Addr           string
-	DatabasePath   string
-	SessionSecret  []byte
-	SessionSecure  bool
-	AllowedOrigins []string
-	StaticDir      string
-	LLMBaseURL     string
-	LLMAPIKey      string
-	LLMModel       string
-	LLMTemperature float64
-	LLMMaxTokens   int
-	LLMTimeoutSec  int
+	Addr               string
+	DatabasePath       string
+	SessionSecret      []byte
+	SessionSecure      bool
+	AllowedOrigins     []string
+	StaticDir          string
+	LLMBaseURL         string
+	LLMAPIKey          string
+	LLMModel           string
+	LLMTemperature     float64
+	LLMMaxTokens       int
+	LLMTimeoutSec      int
+	ContextBudgetRunes int
 }
 
 type LLMValues struct {
@@ -79,19 +80,34 @@ func Load() (Config, error) {
 		}
 	}
 	return Config{
-		Addr:           env("APP_ADDR", "127.0.0.1:8080"),
-		DatabasePath:   env("DB_PATH", "data/novel-studio.db"),
-		SessionSecret:  []byte(secret),
-		SessionSecure:  os.Getenv("SESSION_SECURE") == "true" || production,
-		AllowedOrigins: origins,
-		StaticDir:      env("STATIC_DIR", "frontend/dist"),
-		LLMBaseURL:     env("LLM_BASE_URL", "https://api.openai.com/v1"),
-		LLMAPIKey:      strings.TrimSpace(os.Getenv("LLM_API_KEY")),
-		LLMModel:       env("LLM_MODEL", "gpt-4o-mini"),
-		LLMTemperature: temperature,
-		LLMMaxTokens:   maxTokens,
-		LLMTimeoutSec:  timeout,
+		Addr:               env("APP_ADDR", "127.0.0.1:8080"),
+		DatabasePath:       env("DB_PATH", "data/novel-studio.db"),
+		SessionSecret:      []byte(secret),
+		SessionSecure:      os.Getenv("SESSION_SECURE") == "true" || production,
+		AllowedOrigins:     origins,
+		StaticDir:          env("STATIC_DIR", "frontend/dist"),
+		LLMBaseURL:         env("LLM_BASE_URL", "https://api.openai.com/v1"),
+		LLMAPIKey:          strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		LLMModel:           env("LLM_MODEL", "gpt-4o-mini"),
+		LLMTemperature:     temperature,
+		LLMMaxTokens:       maxTokens,
+		LLMTimeoutSec:      timeout,
+		ContextBudgetRunes: positiveIntEnv("CONTEXT_BUDGET_RUNES", defaultContextBudgetRunes),
 	}, nil
+}
+
+const defaultContextBudgetRunes = 12000
+
+func positiveIntEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func env(key, fallback string) string {

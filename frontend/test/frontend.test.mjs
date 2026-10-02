@@ -272,3 +272,25 @@ test('model settings use authenticated GET, PUT, and connection-test requests', 
     globalThis.fetch = originalFetch
   }
 })
+
+test('chapter memory refresh uses the chapter-scoped POST endpoint', async () => {
+  const originalFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init }
+    return new Response(JSON.stringify({ memoryStatus: 'current' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    const { api } = await loadTypeScriptModule('../src/api.ts')
+    const response = await api.refreshChapterMemory('novel-1', 'chapter-2')
+    assert.equal(request.url, '/api/v1/novels/novel-1/chapters/chapter-2/memory/refresh')
+    assert.equal(request.init.method, 'POST')
+    assert.deepEqual(JSON.parse(request.init.body), {})
+    assert.equal(response.memoryStatus, 'current')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

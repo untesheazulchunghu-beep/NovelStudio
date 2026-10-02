@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"novelstudio/internal/database"
+	"novelstudio/internal/task"
 )
 
 type ChapterRevision struct {
@@ -61,7 +62,9 @@ func (s *Server) restoreChapterRevision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var current Chapter
-	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, r.PathValue("chapterID"), r.PathValue("novelID")).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.Goal, &current.KeyEvents, &current.SuspenseHook, &current.UpdatedAt)
+	err = tx.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id) THEN 'missing' WHEN EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id AND m.source_revision = chapters.revision) THEN 'current' ELSE 'stale' END
+		FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, r.PathValue("chapterID"), r.PathValue("novelID")).Scan(&current.ID, &current.NovelID, &current.Number, &current.Title, &current.Body, &current.Revision, &current.Status, &current.Goal, &current.KeyEvents, &current.SuspenseHook, &current.UpdatedAt, &current.MemoryStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		tx.Rollback()
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
@@ -101,12 +104,19 @@ func (s *Server) restoreChapterRevision(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节版本失败")
 		return
 	}
+	if err := task.RebuildNarrativeThreads(r.Context(), tx, current.NovelID); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节版本失败")
 		return
 	}
 	var restored Chapter
-	if err := s.db.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at FROM chapters WHERE id = ? AND deleted_at IS NULL`, current.ID).Scan(&restored.ID, &restored.NovelID, &restored.Number, &restored.Title, &restored.Body, &restored.Revision, &restored.Status, &restored.Goal, &restored.KeyEvents, &restored.SuspenseHook, &restored.UpdatedAt); err != nil {
+	if err := s.db.QueryRowContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id) THEN 'missing' WHEN EXISTS (SELECT 1 FROM chapter_memories m WHERE m.chapter_id = chapters.id AND m.source_revision = chapters.revision) THEN 'current' ELSE 'stale' END
+		FROM chapters WHERE id = ? AND deleted_at IS NULL`, current.ID).Scan(&restored.ID, &restored.NovelID, &restored.Number, &restored.Title, &restored.Body, &restored.Revision, &restored.Status, &restored.Goal, &restored.KeyEvents, &restored.SuspenseHook, &restored.UpdatedAt, &restored.MemoryStatus); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取恢复后的章节失败")
 		return
 	}

@@ -73,6 +73,7 @@ const showBlueprint = ref(false)
 const guideDraft = ref('')
 const savingGuide = ref(false)
 const savingChapter = ref(false)
+const refreshingMemory = ref(false)
 const chapterRevisions = ref<ChapterRevision[]>([])
 const showHistory = ref(false)
 const loadingHistory = ref(false)
@@ -102,10 +103,22 @@ const chapterStates = ref<Record<string, { chapterId: string; chapterNumber: num
 const chapterProgress = computed(() =>
   Object.values(chapterStates.value).sort((a, b) => a.chapterNumber - b.chapterNumber),
 )
+const nodeProgress = ref<Array<{ nodeId: string; title: string; status: string }>>([])
+const reviewItems = ref<
+  Array<{
+    event: string
+    status: string
+    quote: string
+    location: string
+    modelJudgment: string
+    quoteVerbatim: boolean
+  }>
+>([])
 const retryingTask = ref(false)
 const demoMode = ref(false)
 const streamText = ref('')
 const taskContextSources = ref<string[]>([])
+const taskDroppedContext = ref<string[]>([])
 const contextTruncation = ref({ entities: 0, relations: 0 })
 const lastSequence = ref(0)
 let taskSocket: WebSocket | null = null
@@ -704,6 +717,31 @@ async function saveChapter() {
   await persistChapterDraft(true)
 }
 
+async function refreshChapterMemory() {
+  if (!activeNovel.value || !activeChapter.value || !canEdit.value || refreshingMemory.value) return
+  if (
+    hasUnsavedChanges() ||
+    activeSaveConflict.value ||
+    (activeTask.value && ['queued', 'running'].includes(activeTask.value.status))
+  ) {
+    notify('请先保存当前正文并等待生成任务结束。', true)
+    return
+  }
+  const novelId = activeNovel.value.id
+  const chapterId = activeChapter.value.id
+  refreshingMemory.value = true
+  try {
+    const result = await api.refreshChapterMemory(novelId, chapterId)
+    const chapter = chapters.value.find((item) => item.id === chapterId)
+    if (chapter) chapter.memoryStatus = result.memoryStatus
+    notify('章节记忆已更新')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '刷新章节记忆失败', true)
+  } finally {
+    refreshingMemory.value = false
+  }
+}
+
 async function loadChapterRevisions() {
   if (!activeNovel.value || !activeChapter.value) return
   loadingHistory.value = true
@@ -1017,6 +1055,18 @@ async function createWorkflow() {
   }
 }
 
+async function createWorkflowTemplate(template: string) {
+  if (!activeNovel.value || !canEdit.value) return
+  try {
+    const workflow = await api.createWorkflowTemplate(activeNovel.value.id, template)
+    workflows.value.unshift(workflow)
+    selectWorkflow(workflow)
+    notify(`已创建「${template}」`)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '创建工作流失败', true)
+  }
+}
+
 async function saveWorkflow() {
   if (!activeNovel.value || !canEdit.value) return
   try {
@@ -1120,6 +1170,25 @@ async function startBatch() {
   }
 }
 
+async function startReview() {
+  if (!activeNovel.value || !canEdit.value) return
+  const ids = selectedChapterIds.value.length
+    ? selectedChapterIds.value
+    : activeChapter.value
+      ? [activeChapter.value.id]
+      : []
+  if (!ids.length || !runInstruction.value.trim()) {
+    notify('选择至少一个章节并填写审稿说明', true)
+    return
+  }
+  try {
+    const task = await api.createReviewTask(activeNovel.value.id, ids, runInstruction.value.trim())
+    await startTask(task)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '创建审稿任务失败', true)
+  }
+}
+
 async function runWorkflow() {
   if (!activeNovel.value || !canEdit.value) return
   const ids = workflowChapterIds.value.length
@@ -1151,10 +1220,13 @@ async function startTask(task: NovelTask) {
   activeTask.value = task
   taskProgress.value = 0
   chapterStates.value = {}
+  nodeProgress.value = []
+  reviewItems.value = []
   retryingTask.value = false
   demoMode.value = false
   streamText.value = ''
   taskContextSources.value = []
+  taskDroppedContext.value = []
   contextTruncation.value = { entities: 0, relations: 0 }
   lastSequence.value = 0
   tasks.value.unshift(task)
@@ -1170,10 +1242,13 @@ async function resumeTask(task: NovelTask) {
     activeTask.value = latest
     taskProgress.value = latest.progress
     chapterStates.value = {}
+    nodeProgress.value = []
+    reviewItems.value = []
     retryingTask.value = false
     demoMode.value = false
     streamText.value = ''
     taskContextSources.value = []
+    taskDroppedContext.value = []
     contextTruncation.value = { entities: 0, relations: 0 }
     lastSequence.value = 0
     section.value = 'write'
@@ -1243,6 +1318,9 @@ function handleTaskEvent(event: TaskEvent) {
     taskContextSources.value = Array.isArray(data.contextSources)
       ? data.contextSources.filter((source): source is string => typeof source === 'string')
       : []
+    taskDroppedContext.value = Array.isArray(data.droppedContext)
+      ? data.droppedContext.filter((source): source is string => typeof source === 'string')
+      : []
     contextTruncation.value = {
       entities: typeof data.truncatedEntities === 'number' ? data.truncatedEntities : 0,
       relations: typeof data.truncatedRelations === 'number' ? data.truncatedRelations : 0,
@@ -1263,6 +1341,37 @@ function handleTaskEvent(event: TaskEvent) {
       chapterNumber: typeof data.chapterNumber === 'number' ? data.chapterNumber : (previous?.chapterNumber ?? 0),
       title: typeof data.title === 'string' ? data.title : (previous?.title ?? ''),
       status: chapterStatus,
+    }
+  }
+  if (event.type === 'node.started' && typeof data.nodeId === 'string') {
+    nodeProgress.value.push({
+      nodeId: data.nodeId,
+      title: typeof data.title === 'string' && data.title ? data.title : data.nodeId,
+      status: 'running',
+    })
+  }
+  if (event.type === 'review.checklist' && Array.isArray(data.items)) {
+    for (const item of data.items) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as Record<string, unknown>
+      if (typeof row.event !== 'string' || typeof row.status !== 'string') continue
+      reviewItems.value.push({
+        event: row.event,
+        status: row.status,
+        quote: typeof row.quote === 'string' ? row.quote : '',
+        location: typeof row.location === 'string' ? row.location : '',
+        modelJudgment: typeof row.modelJudgment === 'string' ? row.modelJudgment : '',
+        quoteVerbatim: row.quoteVerbatim === true,
+      })
+    }
+  }
+  if (event.type === 'node.finished' && typeof data.nodeId === 'string') {
+    const status = typeof data.status === 'string' ? data.status : 'succeeded'
+    for (let index = nodeProgress.value.length - 1; index >= 0; index -= 1) {
+      if (nodeProgress.value[index].nodeId === data.nodeId && nodeProgress.value[index].status === 'running') {
+        nodeProgress.value[index] = { ...nodeProgress.value[index], status }
+        break
+      }
     }
   }
   if (event.type === 'task.token' && typeof data.text === 'string') streamText.value += data.text
@@ -1288,11 +1397,13 @@ function handleTaskEvent(event: TaskEvent) {
       void refreshNovelData()
       if (status === 'completed')
         notify(
-          demoMode.value
-            ? '演示任务完成，生成内容未自动写入'
-            : activeNovel.value?.approvalMode === 'auto'
-              ? '生成完成，章节已自动写入'
-              : '生成完成，提案已进入审核区',
+          activeTask.value?.kind === 'review'
+            ? '审稿清单已完成，正文未改动'
+            : demoMode.value
+              ? '演示任务完成，生成内容未自动写入'
+              : activeNovel.value?.approvalMode === 'auto'
+                ? '生成完成，章节已自动写入'
+                : '生成完成，提案已进入审核区',
         )
       else if (status === 'failed') notify(typeof data.message === 'string' ? data.message : '生成失败', true)
       else if (status === 'canceled') notify('创作任务已取消')
@@ -1540,6 +1651,7 @@ onBeforeUnmount(closeTaskSocket)
         :role-label="roleLabels[activeWorkspace?.role ?? 'viewer']"
         :can-edit="canEdit"
         :saving-chapter="savingChapter"
+        :refreshing-memory="refreshingMemory"
         :unsaved="hasUnsavedChanges()"
         :auto-save-state="autoSaveState"
         :save-conflict="activeSaveConflict"
@@ -1555,6 +1667,7 @@ onBeforeUnmount(closeTaskSocket)
         @update-approval="updateApprovalMode"
         @add-chapter="addChapter"
         @save-chapter="saveChapter"
+        @refresh-memory="refreshChapterMemory"
         @delete-novel="deleteActiveNovel"
         @select-chapter="selectChapter"
         @move-chapter="moveChapter"
@@ -1566,6 +1679,7 @@ onBeforeUnmount(closeTaskSocket)
         @save-conflict="saveDraftAfterConflict"
         @save-guide="saveWritingGuide"
         @start-batch="startBatch"
+        @start-review="startReview"
         @resume-task="resumeTask"
         @open-knowledge="section = 'knowledge'"
       >
@@ -1575,10 +1689,13 @@ onBeforeUnmount(closeTaskSocket)
             :demo-mode="demoMode"
             :progress="taskProgress"
             :chapter-progress="chapterProgress"
+            :node-progress="nodeProgress"
+            :review-items="reviewItems"
             :retrying="retryingTask"
             :can-edit="canEdit"
             :stream-text="streamText"
             :context-sources="taskContextSources"
+            :dropped-context="taskDroppedContext"
             :context-truncation="contextTruncation"
             @cancel="cancelActiveTask"
             @retry="retryActiveTask"
@@ -1633,6 +1750,7 @@ onBeforeUnmount(closeTaskSocket)
         :tasks="tasks"
         @select="selectWorkflowById"
         @create="createWorkflow"
+        @create-template="createWorkflowTemplate"
         @save="saveWorkflow"
         @delete="deleteActiveWorkflow"
         @run="runWorkflow"

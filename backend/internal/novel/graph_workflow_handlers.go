@@ -123,6 +123,15 @@ func (s *Server) createGraphEdge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_EDGE", "关系两端必须是不同实体，关系名称不能为空且不超过 80 字")
 		return
 	}
+	var matchingNodes int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM graph_nodes WHERE novel_id = ? AND id IN (?, ?)`, r.PathValue("novelID"), input.SourceID, input.TargetID).Scan(&matchingNodes); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "检查关系实体失败")
+		return
+	}
+	if matchingNodes != 2 {
+		writeError(w, http.StatusBadRequest, "INVALID_EDGE", "关系指向的实体不存在或不属于当前小说")
+		return
+	}
 	edge := GraphEdge{ID: database.NewID(), NovelID: r.PathValue("novelID"), SourceID: input.SourceID, TargetID: input.TargetID, Relation: input.Relation, Summary: strings.TrimSpace(input.Summary)}
 	_, err := s.db.ExecContext(r.Context(), `INSERT INTO graph_edges (id, novel_id, source_id, target_id, relation, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, edge.ID, edge.NovelID, edge.SourceID, edge.TargetID, edge.Relation, edge.Summary, database.Now())
 	if err != nil {
@@ -304,12 +313,25 @@ func (s *Server) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		Name       string             `json:"name"`
+		Template   string             `json:"template"`
 		Definition WorkflowDefinition `json:"definition"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	input.Name = strings.TrimSpace(input.Name)
+	input.Template = strings.TrimSpace(input.Template)
+	if input.Template != "" {
+		builtin, found := builtinWorkflow(input.Template)
+		if !found {
+			writeError(w, http.StatusBadRequest, "INVALID_WORKFLOW", "未知的内置工作流")
+			return
+		}
+		input.Definition = builtin
+		if input.Name == "" {
+			input.Name = input.Template
+		}
+	}
 	if input.Name == "" || len([]rune(input.Name)) > 80 || !validateWorkflow(input.Definition) {
 		writeError(w, http.StatusBadRequest, "INVALID_WORKFLOW", "工作流名称或节点连线无效")
 		return
@@ -404,31 +426,59 @@ func validateWorkflow(definition WorkflowDefinition) bool {
 	return len(orderedWorkflowNodes(definition)) == len(definition.Nodes)
 }
 
-func (s *Server) workflowPrompt(r *http.Request, workflowID, novelID string) (string, string, bool) {
+func builtinWorkflow(name string) (WorkflowDefinition, bool) {
+	switch name {
+	case "章节起草":
+		return WorkflowDefinition{
+			Nodes: []WorkflowNode{
+				{ID: "context", Kind: "context", Title: "读取设定", Prompt: "读取本章已有资料与正文。", X: 40, Y: 80},
+				{ID: "draft", Kind: "generate", Title: "起草", Prompt: "根据资料写完整章节正文。", X: 320, Y: 80},
+				{ID: "output", Kind: "output", Title: "输出", Prompt: "保存最近一次起草正文。", X: 600, Y: 80},
+			},
+			Edges: []WorkflowEdge{
+				{ID: "draft-from-context", Source: "context", Target: "draft"},
+				{ID: "output-from-draft", Source: "draft", Target: "output"},
+			},
+		}, true
+	case "起草 → 审稿 → 修改":
+		return WorkflowDefinition{
+			Nodes: []WorkflowNode{
+				{ID: "context", Kind: "context", Title: "读取设定", Prompt: "读取本章已有资料与正文。", X: 40, Y: 80},
+				{ID: "draft", Kind: "generate", Title: "起草", Prompt: "根据资料写完整章节正文。", X: 280, Y: 80},
+				{ID: "review", Kind: "review", Title: "审稿", Prompt: "判断正文是否可用。", X: 520, Y: 80},
+				{ID: "output", Kind: "output", Title: "输出", Prompt: "保存通过审稿的正文。", X: 760, Y: 80},
+			},
+			Edges: []WorkflowEdge{
+				{ID: "draft-from-context", Source: "context", Target: "draft"},
+				{ID: "review-from-draft", Source: "draft", Target: "review"},
+				{ID: "output-from-review", Source: "review", Target: "output"},
+			},
+		}, true
+	case "只润色":
+		return WorkflowDefinition{
+			Nodes: []WorkflowNode{
+				{ID: "polish", Kind: "generate", Title: "润色", Prompt: "只润色当前草稿，保持情节不变。", X: 40, Y: 80},
+				{ID: "output", Kind: "output", Title: "输出", Prompt: "保存润色后的正文。", X: 320, Y: 80},
+			},
+			Edges: []WorkflowEdge{
+				{ID: "output-from-polish", Source: "polish", Target: "output"},
+			},
+		}, true
+	default:
+		return WorkflowDefinition{}, false
+	}
+}
+
+func (s *Server) loadWorkflow(r *http.Request, workflowID, novelID string) (string, WorkflowDefinition, bool) {
 	var name, raw string
 	if err := s.db.QueryRowContext(r.Context(), `SELECT name, definition_json FROM workflows WHERE id = ? AND novel_id = ?`, workflowID, novelID).Scan(&name, &raw); err != nil {
-		return "", "", false
+		return "", WorkflowDefinition{}, false
 	}
 	var definition WorkflowDefinition
-	if json.Unmarshal([]byte(raw), &definition) != nil {
-		return "", "", false
+	if json.Unmarshal([]byte(raw), &definition) != nil || len(orderedWorkflowNodes(definition)) != len(definition.Nodes) {
+		return "", WorkflowDefinition{}, false
 	}
-	ordered := orderedWorkflowNodes(definition)
-	if len(ordered) != len(definition.Nodes) {
-		return "", "", false
-	}
-	var instructions strings.Builder
-	for _, node := range ordered {
-		switch node.Kind {
-		case "context":
-			instructions.WriteString("\n资料节点「" + node.Title + "」：\n" + node.Prompt + "\n")
-		case "generate":
-			instructions.WriteString("\n创作节点「" + node.Title + "」：\n" + node.Prompt + "\n")
-		case "review":
-			instructions.WriteString("\n自检节点「" + node.Title + "」：\n" + node.Prompt + "\n")
-		}
-	}
-	return name, instructions.String(), true
+	return name, definition, true
 }
 
 func orderedWorkflowNodes(definition WorkflowDefinition) []WorkflowNode {

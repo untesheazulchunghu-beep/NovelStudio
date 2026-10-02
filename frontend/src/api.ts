@@ -25,6 +25,7 @@ export type Chapter = {
   suspenseHook: string
   deletedAt?: string
   updatedAt: string
+  memoryStatus?: 'missing' | 'stale' | 'current'
 }
 export type ChapterRevision = { revision: number; title: string; body: string; source: string; createdAt: string }
 export type GraphNode = {
@@ -80,6 +81,7 @@ export type Proposal = {
   title: string
   text: string
   status: string
+  demoMode?: boolean
   createdAt: string
 }
 export type TaskEvent = {
@@ -174,6 +176,8 @@ export const api = {
         suspenseHook: chapter.suspenseHook,
       }),
     ),
+  refreshChapterMemory: (novelId: string, chapterId: string) =>
+    request<{ memoryStatus: 'current' }>(`/novels/${novelId}/chapters/${chapterId}/memory/refresh`, json({})),
   chapterRevisions: (novelId: string, chapterId: string) =>
     request<{ revisions: ChapterRevision[] }>(`/novels/${novelId}/chapters/${chapterId}/revisions`),
   restoreChapterRevision: (novelId: string, chapterId: string, revision: number) =>
@@ -201,6 +205,8 @@ export const api = {
   workflows: (novelId: string) => request<{ workflows: Workflow[] }>(`/novels/${novelId}/workflows`),
   createWorkflow: (novelId: string, name: string, definition: Workflow['definition']) =>
     request<Workflow>(`/novels/${novelId}/workflows`, json({ name, definition })),
+  createWorkflowTemplate: (novelId: string, template: string) =>
+    request<Workflow>(`/novels/${novelId}/workflows`, json({ template })),
   updateWorkflow: (novelId: string, workflowId: string, name: string, definition: Workflow['definition']) =>
     request<{ ok: boolean }>(`/novels/${novelId}/workflows/${workflowId}`, put({ name, definition })),
   deleteWorkflow: (novelId: string, workflowId: string) =>
@@ -209,6 +215,8 @@ export const api = {
     request<NovelTask>(`/novels/${novelId}/workflows/${workflowId}/run`, json({ chapterIds, instruction })),
   createBatchTask: (novelId: string, chapterIds: string[], instruction: string) =>
     request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction })),
+  createReviewTask: (novelId: string, chapterIds: string[], instruction: string) =>
+    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, kind: 'review' })),
   tasks: (novelId: string) => request<{ tasks: NovelTask[] }>(`/novels/${novelId}/tasks`),
   task: (taskId: string) => request<NovelTask>(`/tasks/${taskId}`),
   cancelTask: (taskId: string) => request<{ ok: boolean }>(`/tasks/${taskId}/cancel`, json({})),

@@ -25,14 +25,15 @@ const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-s
 	"base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
 
 type Server struct {
-	db          *sql.DB
-	sessions    *auth.Sessions
-	tasks       *task.Manager
-	llmRuntime  *llm.Runtime
-	origins     []string
-	staticDir   string
-	static      http.Handler
-	authLimiter *ratelimit.Limiter
+	db            *sql.DB
+	sessions      *auth.Sessions
+	tasks         *task.Manager
+	llmRuntime    *llm.Runtime
+	origins       []string
+	staticDir     string
+	static        http.Handler
+	authLimiter   *ratelimit.Limiter
+	contextBudget int
 }
 
 func NewServer(db *sql.DB, sessions *auth.Sessions, tasks *task.Manager, origins []string, staticDir string) *Server {
@@ -52,6 +53,22 @@ func NewServer(db *sql.DB, sessions *auth.Sessions, tasks *task.Manager, origins
 
 func (s *Server) SetLLMRuntime(runtime *llm.Runtime) {
 	s.llmRuntime = runtime
+}
+
+// SetContextBudget sets the rune budget shared by the summary window, the
+// relevant graph, and unrecovered foreshadowing. Non-positive values keep the
+// default.
+func (s *Server) SetContextBudget(runes int) {
+	if runes > 0 {
+		s.contextBudget = runes
+	}
+}
+
+func (s *Server) contextBudgetRunes() int {
+	if s.contextBudget > 0 {
+		return s.contextBudget
+	}
+	return task.DefaultContextBudgetRunes
 }
 
 func (s *Server) Handler() http.Handler {
@@ -84,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/novels/{novelID}/chapters/{chapterID}", s.deleteChapter)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/chapters/{chapterID}/restore", s.restoreChapter)
 	mux.HandleFunc("PUT /api/v1/novels/{novelID}/chapters/{chapterID}", s.updateChapter)
+	mux.HandleFunc("POST /api/v1/novels/{novelID}/chapters/{chapterID}/memory/refresh", s.refreshChapterMemory)
 	mux.HandleFunc("GET /api/v1/novels/{novelID}/chapters/{chapterID}/revisions", s.listChapterRevisions)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/chapters/{chapterID}/revisions/{revision}/restore", s.restoreChapterRevision)
 	mux.HandleFunc("GET /api/v1/novels/{novelID}/graph", s.getGraph)

@@ -24,6 +24,7 @@ defineProps<{
   roleLabel: string
   canEdit: boolean
   savingChapter: boolean
+  refreshingMemory: boolean
   unsaved: boolean
   autoSaveState: 'saved' | 'pending' | 'saving' | 'error'
   saveConflict: { remote: Chapter; baseRevision: number } | null
@@ -42,6 +43,7 @@ const emit = defineEmits<{
   updateApproval: [event: Event]
   addChapter: []
   saveChapter: []
+  refreshMemory: []
   deleteNovel: []
   selectChapter: [chapterId: string]
   moveChapter: [chapterId: string, offset: -1 | 1]
@@ -53,6 +55,7 @@ const emit = defineEmits<{
   saveConflict: []
   saveGuide: []
   startBatch: []
+  startReview: []
   resumeTask: [task: NovelTask]
   openKnowledge: []
 }>()
@@ -113,9 +116,11 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
             <span class="chapter-number">{{ chapter.number.toString().padStart(2, '0') }}</span>
             <span class="chapter-copy">
               <strong>{{ chapter.title }}</strong>
-              <small>{{
-                chapter.body ? `${countManuscriptCharacters(chapter.body)} 字 · v${chapter.revision}` : '尚未开始'
-              }}</small>
+              <small
+                >{{ chapter.body ? `${countManuscriptCharacters(chapter.body)} 字 · v${chapter.revision}` : '尚未开始'
+                }}<span v-if="chapter.memoryStatus === 'stale'"> · 记忆待刷新</span>
+                <span v-else-if="chapter.memoryStatus === 'missing' && chapter.body"> · 尚无记忆</span></small
+              >
             </span>
             <span v-if="chapter.id === activeChapterId" class="chapter-active"></span>
           </button>
@@ -187,6 +192,17 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               <button class="history-trigger" @click="emit('toggleHistory')">
                 版本记录 <span>{{ chapterRevisions.length }}</span>
               </button>
+              <button
+                v-if="canEdit && activeChapter && activeChapter.memoryStatus !== 'current'"
+                class="history-trigger"
+                :disabled="
+                  refreshingMemory || savingChapter || unsaved || activeTaskRunning || !activeChapter.body.trim()
+                "
+                @click="emit('refreshMemory')"
+              >
+                {{ refreshingMemory ? '刷新中…' : '刷新记忆' }}
+              </button>
+              <span v-else-if="activeChapter?.memoryStatus === 'current'" class="memory-state">记忆已同步</span>
             </div>
           </div>
           <input v-model="draftTitle" class="chapter-title-input" :readonly="!canEdit" placeholder="章节标题" />
@@ -320,6 +336,13 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               >
                 开始生成 <span>↗</span>
               </button>
+              <button
+                class="button secondary"
+                :disabled="!canEdit || !chapters.length || activeTaskRunning"
+                @click="emit('startReview')"
+              >
+                审稿清单
+              </button>
             </div>
             <p class="assistant-hint">
               将使用小说设定与知识图谱作为上下文。{{
@@ -389,7 +412,9 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
             >
               <span class="task-dot" :class="item.status"></span>
               <div>
-                <strong>{{ item.kind === 'workflow' ? '工作流执行' : '批量章节生成' }}</strong>
+                <strong>{{
+                  item.kind === 'workflow' ? '工作流执行' : item.kind === 'review' ? '关键事件审稿' : '批量章节生成'
+                }}</strong>
                 <small>{{
                   item.status === 'completed'
                     ? '已完成'

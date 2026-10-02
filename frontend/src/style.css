@@ -2172,6 +2172,38 @@ select {
   font-family: var(--mono);
   font-weight: 700;
 }
+.proposal-diff-hunk {
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #dce7d7;
+  border-radius: 6px;
+  background: #f8faf6;
+}
+.proposal-hunk-control,
+.proposal-title-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #607565;
+  font-size: 9px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.proposal-hunk-control input,
+.proposal-title-choice input {
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: #64885c;
+}
+.proposal-hunk-control:has(input:disabled),
+.proposal-title-choice:has(input:disabled) {
+  cursor: default;
+  opacity: 0.65;
+}
+.proposal-title-choice {
+  margin: 8px 0;
+}
 .proposal-diff-list .diff-added {
   color: #3f7651;
   background: #edf6ec;

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -734,6 +735,13 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor", "reviewer") {
 		return
 	}
+	var input struct {
+		SelectedHunks *[]int `json:"selectedHunks"`
+		ApplyTitle    bool   `json:"applyTitle"`
+	}
+	if !decodeOptionalProposalJSON(w, r, &input) {
+		return
+	}
 	proposalID := r.PathValue("proposalID")
 	var chapterID, title, text, status string
 	var baseRevision int
@@ -765,12 +773,34 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "STALE_REVISION", "章节已被更新，请刷新后重新生成提案")
 		return
 	}
+	nextTitle, nextText := title, text
+	selectedHunkCount := 0
+	if input.SelectedHunks != nil {
+		mergedText, _, valid := mergeProposalHunks(current.Body, text, *input.SelectedHunks)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "INVALID_PROPOSAL_SELECTION", "所选段落范围无效或包含重复项")
+			return
+		}
+		nextText = mergedText
+		selectedHunkCount = len(*input.SelectedHunks)
+		if selectedHunkCount == 0 && !input.ApplyTitle {
+			writeError(w, http.StatusBadRequest, "EMPTY_PROPOSAL_SELECTION", "请至少选择一组段落修改或提案标题")
+			return
+		}
+		if !input.ApplyTitle {
+			nextTitle = current.Title
+		}
+		if nextTitle == current.Title && nextText == current.Body {
+			writeError(w, http.StatusBadRequest, "EMPTY_PROPOSAL_SELECTION", "所选内容不会改变当前章节")
+			return
+		}
+	}
 	storeMemory := !demoMode && !s.tasks.DemoMode()
 	var memory task.ChapterMemory
 	if storeMemory {
 		memory, err = s.tasks.ComposeChapterMemory(r.Context(), task.Chapter{
-			ID: current.ID, Number: current.Number, Title: title, Body: text,
-		}, text)
+			ID: current.ID, Number: current.Number, Title: nextTitle, Body: nextText,
+		}, nextText)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				writeError(w, http.StatusRequestTimeout, "MEMORY_GENERATION_CANCELED", "生成章节记忆已取消，章节尚未应用")
@@ -821,7 +851,7 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录章节版本失败")
 		return
 	}
-	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET title = ?, body = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND novel_id = ? AND revision = ?`, title, text, database.Now(), chapterID, novelID, baseRevision)
+	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET title = ?, body = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND novel_id = ? AND revision = ?`, nextTitle, nextText, database.Now(), chapterID, novelID, baseRevision)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
 		return
@@ -855,7 +885,29 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")
 		return
 	}
+	if input.SelectedHunks != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "appliedHunks": selectedHunkCount, "appliedTitle": input.ApplyTitle})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func decodeOptionalProposalJSON(w http.ResponseWriter, r *http.Request, destination any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求内容格式无效")
+		return false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求只能包含一个 JSON 对象")
+		return false
+	}
+	return true
 }
 
 func (s *Server) rejectProposal(w http.ResponseWriter, r *http.Request) {

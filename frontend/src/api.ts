@@ -84,6 +84,7 @@ export type Proposal = {
   demoMode?: boolean
   createdAt: string
 }
+export type ProposalSelection = { selectedHunks: number[]; applyTitle: boolean }
 export type TaskEvent = {
   taskId: string
   sequence: number
@@ -223,8 +224,11 @@ export const api = {
   retryTask: (taskId: string) => request<NovelTask>(`/tasks/${taskId}/retry`, json({})),
 
   proposals: (novelId: string) => request<{ proposals: Proposal[] }>(`/novels/${novelId}/proposals`),
-  applyProposal: (novelId: string, proposalId: string) =>
-    request<{ ok: boolean }>(`/novels/${novelId}/proposals/${proposalId}/apply`, json({})),
+  applyProposal: (novelId: string, proposalId: string, selection?: ProposalSelection) =>
+    request<{ ok: boolean; appliedHunks?: number; appliedTitle?: boolean }>(
+      `/novels/${novelId}/proposals/${proposalId}/apply`,
+      json(selection ?? {}),
+    ),
   rejectProposal: (novelId: string, proposalId: string) =>
     request<{ ok: boolean }>(`/novels/${novelId}/proposals/${proposalId}/reject`, json({})),
   regenerateStaleProposal: (novelId: string, proposalId: string) =>

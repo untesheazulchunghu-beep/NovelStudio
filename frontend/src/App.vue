@@ -12,6 +12,7 @@ import {
   type Novel,
   type NovelTask,
   type Proposal,
+  type ProposalSelection,
   type TaskEvent,
   type User,
   type Workflow,
@@ -1436,16 +1437,24 @@ async function refreshNovelData() {
   if (!keepDraft) syncDraft()
 }
 
-async function applyProposal(proposal: Proposal) {
+async function applyProposal(proposal: Proposal, selection?: ProposalSelection) {
   if (!activeNovel.value) return
   if (proposal.chapterId === activeChapterId.value && hasUnsavedChanges()) {
     notify('请先保存或放弃当前章节草稿，再应用提案。', true)
     return
   }
   try {
-    await api.applyProposal(activeNovel.value.id, proposal.id)
+    await api.applyProposal(activeNovel.value.id, proposal.id, selection)
     await refreshNovelData()
-    notify('提案已应用，章节版本已更新')
+    if (selection) {
+      const applied = [
+        selection.selectedHunks.length ? `${selection.selectedHunks.length} 组段落修改` : '',
+        selection.applyTitle ? '提案标题' : '',
+      ].filter(Boolean)
+      notify(`已采纳${applied.join('和')}；提案已处理，章节版本已更新。`)
+    } else {
+      notify('提案已应用，章节版本已更新')
+    }
   } catch (error) {
     if (error instanceof Error && /更新|版本/.test(error.message)) {
       try {
@@ -1710,6 +1719,7 @@ onBeforeUnmount(closeTaskSocket)
             :saving-chapter="savingChapter"
             :active-task-running="!!activeTask && ['queued', 'running'].includes(activeTask.status)"
             @apply="applyProposal"
+            @apply-selected="applyProposal"
             @reject="rejectProposal"
             @regenerate="regenerateStaleProposal"
           />

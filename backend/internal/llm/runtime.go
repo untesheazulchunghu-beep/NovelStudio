@@ -12,12 +12,14 @@ import (
 )
 
 type RuntimeSettings struct {
-	BaseURL     string
-	APIKey      string
-	Model       string
-	Temperature float64
-	MaxTokens   int
-	TimeoutSec  int
+	BaseURL              string
+	APIKey               string
+	Model                string
+	Temperature          float64
+	MaxTokens            int
+	TimeoutSec           int
+	InputCostPerMillion  float64
+	OutputCostPerMillion float64
 }
 
 type SettingsInput struct {
@@ -31,12 +33,14 @@ type SettingsInput struct {
 }
 
 type SettingsView struct {
-	BaseURL          string  `json:"baseUrl"`
-	Model            string  `json:"model"`
-	Temperature      float64 `json:"temperature"`
-	MaxTokens        int     `json:"maxTokens"`
-	TimeoutSec       int     `json:"timeoutSec"`
-	APIKeyConfigured bool    `json:"apiKeyConfigured"`
+	BaseURL              string  `json:"baseUrl"`
+	Model                string  `json:"model"`
+	Temperature          float64 `json:"temperature"`
+	MaxTokens            int     `json:"maxTokens"`
+	TimeoutSec           int     `json:"timeoutSec"`
+	InputCostPerMillion  float64 `json:"inputCostPerMillion"`
+	OutputCostPerMillion float64 `json:"outputCostPerMillion"`
+	APIKeyConfigured     bool    `json:"apiKeyConfigured"`
 }
 
 type SettingsValidationError struct {
@@ -97,23 +101,28 @@ func (r *Runtime) GenerateWithProvider(ctx context.Context, providerID, prompt s
 }
 
 func (r *Runtime) GenerateWithModeFor(ctx context.Context, providerID, prompt string, emit func(string)) (string, error, bool) {
+	text, _, err, demoMode := r.GenerateWithUsageFor(ctx, providerID, prompt, emit)
+	return text, err, demoMode
+}
+
+func (r *Runtime) GenerateWithUsageFor(ctx context.Context, providerID, prompt string, emit func(string)) (string, GenerationUsage, error, bool) {
 	if r.catalog != nil {
 		provider, settings, exists := r.catalog.Provider(providerID)
 		if !exists {
-			return "", &SettingsValidationError{message: "所选模型服务商不存在"}, true
+			return "", GenerationUsage{}, &SettingsValidationError{message: "所选模型服务商不存在"}, true
 		}
-		text, err := provider.Generate(ctx, prompt, emit)
-		return text, err, settings.APIKey == ""
+		text, usage, err := provider.GenerateWithUsage(ctx, prompt, emit)
+		return text, usage, err, settings.APIKey == ""
 	}
 	if providerID != "" {
-		return "", &SettingsValidationError{message: "当前生成器不支持所选模型服务商"}, true
+		return "", GenerationUsage{}, &SettingsValidationError{message: "当前生成器不支持所选模型服务商"}, true
 	}
 	r.mu.RLock()
 	provider := r.provider
 	demoMode := r.settings.APIKey == ""
 	r.mu.RUnlock()
-	text, err := provider.Generate(ctx, prompt, emit)
-	return text, err, demoMode
+	text, usage, err := provider.GenerateWithUsage(ctx, prompt, emit)
+	return text, usage, err, demoMode
 }
 
 func (r *Runtime) DemoMode() bool {
@@ -233,12 +242,14 @@ func (r *Runtime) TestConnection(ctx context.Context, input SettingsInput) error
 
 func settingsView(settings RuntimeSettings) SettingsView {
 	return SettingsView{
-		BaseURL:          settings.BaseURL,
-		Model:            settings.Model,
-		Temperature:      settings.Temperature,
-		MaxTokens:        settings.MaxTokens,
-		TimeoutSec:       settings.TimeoutSec,
-		APIKeyConfigured: settings.APIKey != "",
+		BaseURL:              settings.BaseURL,
+		Model:                settings.Model,
+		Temperature:          settings.Temperature,
+		MaxTokens:            settings.MaxTokens,
+		TimeoutSec:           settings.TimeoutSec,
+		InputCostPerMillion:  settings.InputCostPerMillion,
+		OutputCostPerMillion: settings.OutputCostPerMillion,
+		APIKeyConfigured:     settings.APIKey != "",
 	}
 }
 
@@ -285,6 +296,12 @@ func validateRuntimeSettings(settings RuntimeSettings) error {
 	if settings.TimeoutSec < 1 || settings.TimeoutSec > 1800 {
 		return &SettingsValidationError{message: "请求超时必须在 1 到 1800 秒之间"}
 	}
+	if math.IsNaN(settings.InputCostPerMillion) || math.IsInf(settings.InputCostPerMillion, 0) ||
+		settings.InputCostPerMillion < 0 || settings.InputCostPerMillion > 1_000_000 ||
+		math.IsNaN(settings.OutputCostPerMillion) || math.IsInf(settings.OutputCostPerMillion, 0) ||
+		settings.OutputCostPerMillion < 0 || settings.OutputCostPerMillion > 1_000_000 {
+		return &SettingsValidationError{message: "每百万 Token 单价必须在 0 到 1000000 美元之间"}
+	}
 	return nil
 }
 
@@ -294,8 +311,10 @@ func newRuntimeProvider(settings RuntimeSettings) *Provider {
 		timeout = 8 * time.Minute
 	}
 	return New(settings.BaseURL, settings.APIKey, settings.Model, Options{
-		Temperature: settings.Temperature,
-		MaxTokens:   settings.MaxTokens,
-		Timeout:     timeout,
+		Temperature:          settings.Temperature,
+		MaxTokens:            settings.MaxTokens,
+		Timeout:              timeout,
+		InputCostPerMillion:  settings.InputCostPerMillion,
+		OutputCostPerMillion: settings.OutputCostPerMillion,
 	})
 }

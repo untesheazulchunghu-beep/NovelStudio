@@ -542,7 +542,10 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor", "reviewer", "viewer") {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT id, novel_id, workflow_id, kind, status, progress, error_text, created_at, updated_at FROM tasks WHERE novel_id = ? ORDER BY created_at DESC LIMIT 50`, r.PathValue("novelID"))
+	rows, err := s.db.QueryContext(r.Context(), `SELECT id, novel_id, workflow_id, kind, status, progress, error_text,
+		prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+		reported_token_calls, estimated_token_calls, cost_known_calls, cost_unknown_calls,
+		created_at, updated_at FROM tasks WHERE novel_id = ? ORDER BY created_at DESC LIMIT 50`, r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取任务失败")
 		return
@@ -552,13 +555,17 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item task.Task
 		var workflowID sql.NullString
-		if err := rows.Scan(&item.ID, &item.NovelID, &workflowID, &item.Kind, &item.Status, &item.Progress, &item.Error, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.NovelID, &workflowID, &item.Kind, &item.Status, &item.Progress, &item.Error,
+			&item.PromptTokens, &item.CompletionTokens, &item.TotalTokens, &item.EstimatedCostUSD,
+			&item.ReportedTokenCalls, &item.EstimatedTokenCalls, &item.CostKnownCalls, &item.CostUnknownCalls,
+			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取任务失败")
 			return
 		}
 		if workflowID.Valid {
 			item.WorkflowID = workflowID.String
 		}
+		item.CostKnown = item.CostKnownCalls > 0 && item.CostUnknownCalls == 0
 		tasks = append(tasks, item)
 	}
 	if err := rows.Err(); err != nil {

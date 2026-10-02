@@ -114,6 +114,15 @@ function chapterStatusLabel(task: NovelTask, status: string) {
       </div>
     </div>
     <div class="progress-track"><span :style="{ width: `${progress}%` }"></span></div>
+    <div v-if="(task.totalTokens ?? 0) > 0" class="task-usage-breakdown">
+      <strong>本任务 {{ (task.totalTokens ?? 0).toLocaleString() }} Token</strong>
+      <span>输入 {{ (task.promptTokens ?? 0).toLocaleString() }} · 输出 {{ (task.completionTokens ?? 0).toLocaleString() }}</span>
+      <small>
+        {{ (task.reportedTokenCalls ?? 0).toLocaleString() }} 次实际用量
+        <template v-if="task.estimatedTokenCalls">· {{ (task.estimatedTokenCalls ?? 0).toLocaleString() }} 次估算用量</template>
+      </small>
+      <small>费用：{{ task.costKnown ? `$${(task.estimatedCostUsd ?? 0).toFixed(8)} USD` : '未配置费率' }}</small>
+    </div>
     <div v-if="chapterProgress.length" class="chapter-progress-list">
       <div v-for="chapter in chapterProgress" :key="chapter.chapterId" class="chapter-progress-item">
         <span>第 {{ chapter.chapterNumber }} 章 · {{ chapter.title }}</span>

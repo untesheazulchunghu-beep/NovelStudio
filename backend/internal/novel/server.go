@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/llm/providers/{providerID}", s.updateLLMProvider)
 	mux.HandleFunc("DELETE /api/v1/settings/llm/providers/{providerID}", s.deleteLLMProvider)
 	mux.HandleFunc("PUT /api/v1/settings/llm/providers/{providerID}/default", s.setDefaultLLMProvider)
+	mux.HandleFunc("GET /api/v1/admin/usage", s.adminUsage)
 	mux.HandleFunc("POST /api/v1/auth/register", s.rateLimit(s.register))
 	mux.HandleFunc("POST /api/v1/auth/login", s.rateLimit(s.login))
 	mux.HandleFunc("POST /api/v1/auth/logout", s.logout)

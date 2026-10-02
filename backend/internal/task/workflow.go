@@ -138,8 +138,12 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			reviewNote := laterReviewOutput(request.Nodes, index, outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, reviewNote)
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, err, demo := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
+			text, usage, err, demo := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 			tokenBatch.flush()
+			m.recordUsage(request.ID, usage, map[string]any{
+				"chapterId": chapter.ID, "chapterNumber": chapter.Number,
+				"kind": node.Kind, "nodeId": node.ID, "nodeTitle": node.Title,
+			})
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					m.emitNode(request.ID, "node.finished", chapter, node, "canceled", "任务已取消")
@@ -164,8 +168,12 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			upstream := upstreamText(request.Nodes[:index], outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, "")
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
+			text, usage, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 			tokenBatch.flush()
+			m.recordUsage(request.ID, usage, map[string]any{
+				"chapterId": chapter.ID, "chapterNumber": chapter.Number,
+				"kind": node.Kind, "nodeId": node.ID, "nodeTitle": node.Title,
+			})
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					m.emitNode(request.ID, "node.finished", chapter, node, "canceled", "任务已取消")
@@ -296,7 +304,10 @@ func (m *Manager) persistChapterOutput(ctx context.Context, request Request, cha
 	var chapterMemory ChapterMemory
 	memoryAvailable := false
 	if applyAutomatically {
-		rawMemory, memoryErr, memoryDemo := m.generate(ctx, request.ProviderID, MemoryPrompt(chapter, text), func(string) {})
+		rawMemory, memoryUsage, memoryErr, memoryDemo := m.generate(ctx, request.ProviderID, MemoryPrompt(chapter, text), func(string) {})
+		m.recordUsage(request.ID, memoryUsage, map[string]any{
+			"chapterId": chapter.ID, "chapterNumber": chapter.Number, "kind": "memory",
+		})
 		if memoryErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return "", false, ctxErr

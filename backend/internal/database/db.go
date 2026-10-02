@@ -106,6 +106,11 @@ var migrations = []migration{
 		name:    "model-providers",
 		apply:   migrateModelProviders,
 	},
+	{
+		version: 7,
+		name:    "model-usage-accounting",
+		apply:   migrateModelUsage,
+	},
 }
 
 type columnMigration struct {
@@ -232,6 +237,35 @@ func migrateModelProviders(tx *sql.Tx) error {
 	for _, statement := range modelProviderStatements {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func migrateModelUsage(tx *sql.Tx) error {
+	columns := []columnMigration{
+		{"model_providers", "input_cost_per_million", "REAL NOT NULL DEFAULT 0"},
+		{"model_providers", "output_cost_per_million", "REAL NOT NULL DEFAULT 0"},
+		{"tasks", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "total_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0"},
+		{"tasks", "reported_token_calls", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "estimated_token_calls", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "cost_known_calls", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "cost_unknown_calls", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, item := range columns {
+		exists, err := columnExists(tx, item.table, item.column)
+		if err != nil {
+			return fmt.Errorf("inspect %s.%s: %w", item.table, item.column, err)
+		}
+		if exists {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", item.table, item.column, item.definition)
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migrate %s.%s: %w", item.table, item.column, err)
 		}
 	}
 	return nil

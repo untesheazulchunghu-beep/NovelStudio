@@ -196,8 +196,11 @@ func (m *Manager) runReviewChecklist(ctx context.Context, request Request) {
 		}
 		prompt := buildReviewPrompt(request, chapter, events)
 		tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-		text, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
+		text, usage, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 		tokenBatch.flush()
+		m.recordUsage(request.ID, usage, map[string]any{
+			"chapterId": chapter.ID, "chapterNumber": chapter.Number, "kind": "review",
+		})
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
 				m.emit(request.ID, "chapter.canceled", map[string]any{"chapterId": chapter.ID, "chapterNumber": chapter.Number})

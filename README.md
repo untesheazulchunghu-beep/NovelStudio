@@ -22,7 +22,8 @@
 | 创作工作流 | 可视化编排「资料 → 生成 → 自检 → 输出」节点，并按依赖顺序逐个执行。资料节点不调用模型；生成和审稿节点各自调用一次，后一个节点能看到前一个节点的结果。审稿不通过会退回前一个生成节点，次数有上限。输出节点按人工审核、自动写入或演示模式决定是否改正文。可直接创建「章节起草」「起草 → 审稿 → 修改」「只润色」。这里的审稿节点只区分通过 / 不通过，不是按关键事件逐条核对的审稿清单 |
 | 关键事件审稿 | 从生成任务入口发起，不走工作流节点，不改正文，也不产生章节提案。蓝图「关键事件」的每个非空行是一条，结果为已完成、未完成或待核实，并保存模型判断、引文和位置。已完成只接受当前正文里的逐字引文；引文对得上本身不会变成已完成。没有非空关键事件时给出空清单 |
 | 连续性检查 | 从章节编辑器单独发起，按当前正文挑选相关图谱事实、截至目标章节的人物状态和已定稿章节记忆，提示时间线、人物状态与设定冲突。显示正文与来源引文的逐字核对结果；只供作者参考，不改正文、不创建提案 |
-| 模型接入设置 | 首个账户可在 UI 配置本机共享的 OpenAI 兼容 API 地址、密钥、模型与生成参数；测试连接后立即生效，密钥不会由设置接口回显 |
+| 模型接入设置 | 首个账户可在 UI 配置本机共享的 OpenAI 兼容 API 地址、密钥、模型、生成参数和 USD / 百万 Token 单价；测试连接后立即生效，密钥不会由设置接口回显 |
+| 模型用量 | 本机首个账户可按任务、作品和用户查看输入 / 输出 Token 与估算费用；服务商返回的 usage 标为实际用量，未返回时按文本长度估算并明确标记。两项费率均为 0 时显示未配置费率 |
 | 长篇记忆 | 应用提案或自动写入后，为该章保存摘要、出场人物、新增设定与伏笔变化；再次定稿会替换这一章的当前记录。手动编辑或恢复正文版本会将旧记忆标为待刷新，并从后续生成上下文中排除；可在章节编辑器按需刷新。未应用的提案和未确认的演示生成不写入记忆 |
 | 生成任务 | 批量或按工作流生成章节；实时进度、Token 流、取消；逐章状态，失败后可只重试尚未成功的章节；模型临时故障自动重试并提供分类提示。提示词在上下文预算内注入近期章节摘要、蓝图相关的图谱事实、目标章节适用的人物状态和尚未回收的伏笔；详情列出本次注入项和未注入项。结果进入提案审核或自动写入 |
 | 提案审核 | 按段落组对比生成提案，可选择采纳部分修改或整份提案，标题可单独采纳；应用前保留旧版本并校验章节版本；过期提案可查看基准、当前和提案版本，编辑者可手工整理三方合并稿，也可按原要求重新生成 |
@@ -110,7 +111,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 ```
 
 打开 http://127.0.0.1:8080 即可使用。运行目录默认为 `release/`，可通过 `-OutputDirectory` 指定其他位置；
-请将目录放在当前用户有写入权限的位置。注册首个账户后，进入侧栏「API 设置」，添加兼容接口地址、模型和 API Key，先测试连接再保存；创作页和工作流页都可以为任务选择服务商。生成目录内的
+请将目录放在当前用户有写入权限的位置。注册首个账户后，进入侧栏「API 设置」，添加兼容接口地址、模型和 API Key，先测试连接再保存；可填写服务商公布的输入、输出 USD / 百万 Token 价格，创作页和工作流页都可以为任务选择服务商。生成目录内的
 `Start-NovelStudio.ps1` 可独立启动或随整个目录搬移，数据库路径相对于该目录解析。
 
 本机冒烟脚本会使用临时数据库验证健康检查、SPA 路由 / 前端资源及登录后的模型设置接口，结束后清理测试数据：
@@ -154,6 +155,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 - 跨域采用显式白名单（`ALLOWED_ORIGINS`），仅回显匹配的来源，不会使用通配符。
 - 模型 API Key 使用 AES-GCM 加密后保存在 SQLite；`LLM_ENCRYPTION_KEY` 保存在本机 `.env`（或由部署环境提供），服务会在首次保存非空 API Key 前写入新生成的密钥。设置接口只返回是否已配置，不返回密钥。备份或搬移数据库时必须同时保留相同的加密密钥；丢失密钥后无法恢复已保存的 API Key。
 - 模型 Provider 配置为本机全局配置，所有账户和工作区共用；仅本机首个注册账户可管理和测试 Provider，其他账户只能选择已配置的 Provider。
+- 模型用量按任务累计并随 `task.usage` 事件记录。OpenAI 兼容服务返回的流式 usage 标为实际用量；缺少 usage 时使用文本长度估算 Token 并标记为估算。费用使用调用时 Provider 的 USD / 百万 Token 单价计算；两项单价均为 0 时费用未知，已记录 Token 数不受影响。升级前的任务没有 usage 原始记录，不会回填历史用量。
 
 ## 测试与验证
 
@@ -191,6 +193,7 @@ GitHub Actions 会在 push 和 pull request 上运行相同的后端检查，以
 - `GET|POST /novels/{id}/workflows`、`PUT|DELETE /novels/{id}/workflows/{workflowID}`、`POST .../run`
 - `GET /settings/llm/providers`、`POST /settings/llm/providers`、`PUT|DELETE /settings/llm/providers/{providerID}`、`PUT .../{providerID}/default`、`POST /settings/llm/providers/test`（登录后查看；仅首个账户可管理 / 测试）
 - `GET|PUT /settings/llm`、`POST /settings/llm/test`（兼容旧单 Provider 设置入口）
+- `GET /admin/usage`（仅本机首个账户；汇总任务、作品和用户的模型 Token 与费用）
 - `POST /novels/{id}/tasks/batch`（可传 `providerId`）、`POST .../workflows/{workflowID}/run`（可传 `providerId`）、`GET /novels/{id}/tasks`、`GET /tasks/{taskID}`
 - `GET /tasks/{taskID}/events`、`GET /tasks/{taskID}/ws`（WebSocket）、`POST /tasks/{taskID}/cancel|retry`
 - `GET /novels/{id}/proposals`、`POST .../proposals/{proposalID}/apply|reject`（`apply` 空请求体表示应用整份提案；也可传 `{"selectedHunks":[0,2],"applyTitle":true}` 只采纳差异视图中选中的段落组，并可单独选择标题）

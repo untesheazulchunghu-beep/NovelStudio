@@ -15,6 +15,8 @@ const form = ref<ModelProviderInput>({
   temperature: 0.7,
   maxTokens: 0,
   timeoutSec: 480,
+  inputCostPerMillion: 0,
+  outputCostPerMillion: 0,
   apiKey: '',
   clearApiKey: false,
 })
@@ -43,6 +45,8 @@ function syncForm(provider: ModelProvider) {
     temperature: provider.temperature,
     maxTokens: provider.maxTokens,
     timeoutSec: provider.timeoutSec,
+    inputCostPerMillion: provider.inputCostPerMillion,
+    outputCostPerMillion: provider.outputCostPerMillion,
     apiKey: '',
     clearApiKey: false,
   }
@@ -84,6 +88,8 @@ function startNewProvider() {
     temperature: base?.temperature ?? 0.7,
     maxTokens: base?.maxTokens ?? 0,
     timeoutSec: base?.timeoutSec ?? 480,
+    inputCostPerMillion: base?.inputCostPerMillion ?? 0,
+    outputCostPerMillion: base?.outputCostPerMillion ?? 0,
     apiKey: '',
     clearApiKey: false,
   }
@@ -110,6 +116,8 @@ function requestSettings(): ModelProviderInput {
     temperature: Number(form.value.temperature),
     maxTokens: Number(form.value.maxTokens),
     timeoutSec: Number(form.value.timeoutSec),
+    inputCostPerMillion: Number(form.value.inputCostPerMillion),
+    outputCostPerMillion: Number(form.value.outputCostPerMillion),
     apiKey: form.value.apiKey,
     clearApiKey: form.value.clearApiKey,
   }
@@ -313,6 +321,33 @@ onMounted(loadSettings)
               />
               <small>长章节可适当调高，范围 1–1800 秒。</small>
             </label>
+            <label class="model-field">
+              <span>输入价格（USD / 百万 Token）</span>
+              <input
+                v-model.number="form.inputCostPerMillion"
+                type="number"
+                min="0"
+                max="1000000"
+                step="0.0001"
+                required
+                :disabled="!canManage"
+              />
+            </label>
+            <label class="model-field">
+              <span>输出价格（USD / 百万 Token）</span>
+              <input
+                v-model.number="form.outputCostPerMillion"
+                type="number"
+                min="0"
+                max="1000000"
+                step="0.0001"
+                required
+                :disabled="!canManage"
+              />
+            </label>
+            <p class="model-price-note field-wide">
+              按服务商公布的美元 / 百万 Token 单价填写。两项都为 0 时费用显示为未配置；没有返回 usage 的兼容服务商会按文本长度估算 Token。
+            </p>
           </div>
 
           <div class="model-form-footer">

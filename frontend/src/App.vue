@@ -31,6 +31,7 @@ import LibraryPage from './components/LibraryPage.vue'
 import LoginPage from './components/LoginPage.vue'
 import MembersPage from './components/MembersPage.vue'
 import ModelSettingsPage from './components/ModelSettingsPage.vue'
+import UsagePage from './components/UsagePage.vue'
 import ProposalReviewPanel from './components/ProposalReviewPanel.vue'
 import StaleProposalMergeDialog from './components/StaleProposalMergeDialog.vue'
 import TaskMonitorPanel from './components/TaskMonitorPanel.vue'
@@ -56,7 +57,7 @@ const activeNovel = ref<Novel | null>(null)
 const chapters = ref<Chapter[]>([])
 const deletedChapters = ref<Chapter[]>([])
 const activeChapterId = ref('')
-const section = ref<'library' | 'write' | 'knowledge' | 'workflow' | 'team' | 'trash' | 'settings'>('library')
+const section = ref<'library' | 'write' | 'knowledge' | 'workflow' | 'team' | 'trash' | 'settings' | 'usage'>('library')
 const loading = ref(false)
 const message = ref('')
 const errorMessage = ref('')
@@ -103,6 +104,7 @@ const edgeForm = ref({ sourceId: '', targetId: '', relation: '', summary: '' })
 const editingEdgeId = ref('')
 const workflows = ref<Workflow[]>([])
 const modelProviders = ref<ModelProvider[]>([])
+const canManageLocalSettings = ref(false)
 const defaultProviderId = ref('')
 const selectedProviderId = ref('')
 const activeWorkflowId = ref('')
@@ -207,6 +209,8 @@ async function loadModelProviders() {
     const result = await api.modelProviders()
     const previousDefaultProviderId = defaultProviderId.value
     modelProviders.value = result.providers
+    canManageLocalSettings.value = result.canManage
+    if (!result.canManage && section.value === 'usage') section.value = 'library'
     defaultProviderId.value = result.defaultProviderId
     if (
       !modelProviders.value.some((provider) => provider.id === selectedProviderId.value) ||
@@ -216,6 +220,8 @@ async function loadModelProviders() {
     }
   } catch {
     modelProviders.value = []
+    canManageLocalSettings.value = false
+    if (section.value === 'usage') section.value = 'library'
     defaultProviderId.value = ''
     selectedProviderId.value = ''
   }
@@ -242,6 +248,8 @@ async function signOut() {
   user.value = null
   workspaces.value = []
   modelProviders.value = []
+  canManageLocalSettings.value = false
+  section.value = 'library'
   defaultProviderId.value = ''
   selectedProviderId.value = ''
   novels.value = []
@@ -1448,6 +1456,9 @@ async function resumeTask(task: NovelTask) {
   if (!activeNovel.value) return
   try {
     const latest = await api.task(task.id)
+    resetTaskUsage(latest)
+    const listedTask = tasks.value.find((item) => item.id === latest.id)
+    if (listedTask) resetTaskUsage(listedTask)
     activeTask.value = latest
     taskProgress.value = latest.progress
     chapterStates.value = {}
@@ -1606,6 +1617,11 @@ function handleTaskEvent(event: TaskEvent) {
     }
   }
   if (event.type === 'task.token' && typeof data.text === 'string') streamText.value += data.text
+  if (event.type === 'task.usage') {
+    if (activeTask.value) applyTaskUsage(activeTask.value, data)
+    const listedTask = tasks.value.find((item) => item.id === activeTask.value?.id)
+    if (listedTask && listedTask !== activeTask.value) applyTaskUsage(listedTask, data)
+  }
   if (event.type === 'task.progress' && typeof data.progress === 'number') {
     taskProgress.value = data.progress
     const listedTask = tasks.value.find((item) => item.id === activeTask.value?.id)
@@ -1647,6 +1663,32 @@ function handleTaskEvent(event: TaskEvent) {
     void refreshNovelData()
     notify('提案已自动写入章节')
   }
+}
+
+function resetTaskUsage(task: NovelTask) {
+  task.promptTokens = 0
+  task.completionTokens = 0
+  task.totalTokens = 0
+  task.estimatedCostUsd = 0
+  task.reportedTokenCalls = 0
+  task.estimatedTokenCalls = 0
+  task.costKnownCalls = 0
+  task.costUnknownCalls = 0
+  task.costKnown = false
+}
+
+function applyTaskUsage(task: NovelTask, data: Record<string, unknown>) {
+  const promptTokens = typeof data.promptTokens === 'number' ? data.promptTokens : 0
+  const completionTokens = typeof data.completionTokens === 'number' ? data.completionTokens : 0
+  task.promptTokens = (task.promptTokens ?? 0) + promptTokens
+  task.completionTokens = (task.completionTokens ?? 0) + completionTokens
+  task.totalTokens = (task.totalTokens ?? 0) + promptTokens + completionTokens
+  task.estimatedCostUsd = (task.estimatedCostUsd ?? 0) + (typeof data.costUsd === 'number' ? data.costUsd : 0)
+  if (data.estimated === true) task.estimatedTokenCalls = (task.estimatedTokenCalls ?? 0) + 1
+  else task.reportedTokenCalls = (task.reportedTokenCalls ?? 0) + 1
+  if (data.costKnown === true) task.costKnownCalls = (task.costKnownCalls ?? 0) + 1
+  else task.costUnknownCalls = (task.costUnknownCalls ?? 0) + 1
+  task.costKnown = (task.costKnownCalls ?? 0) > 0 && (task.costUnknownCalls ?? 0) === 0
 }
 
 async function refreshNovelData() {
@@ -1851,6 +1893,9 @@ onBeforeUnmount(closeTaskSocket)
         <button :class="{ active: section === 'settings' }" @click="section = 'settings'">
           <span class="nav-icon">⚙</span>API 设置
         </button>
+        <button v-if="canManageLocalSettings" :class="{ active: section === 'usage' }" @click="section = 'usage'">
+          <span class="nav-icon">◷</span>模型用量
+        </button>
       </nav>
       <div class="sidebar-bottom">
         <div class="usage-card">
@@ -1884,9 +1929,11 @@ onBeforeUnmount(closeTaskSocket)
                 ? '回收站'
                 : section === 'settings'
                   ? 'API 设置'
-                  : (activeNovel?.title ?? '选择作品')
+                  : section === 'usage'
+                    ? '模型用量'
+                    : (activeNovel?.title ?? '选择作品')
           }}</strong
-          ><template v-if="!['library', 'trash', 'settings'].includes(section)"
+          ><template v-if="!['library', 'trash', 'settings', 'usage'].includes(section)"
             ><span class="crumb-sep">/</span
             ><span>{{
               section === 'write'
@@ -1929,6 +1976,7 @@ onBeforeUnmount(closeTaskSocket)
         @restore="restoreNovel"
       />
       <ModelSettingsPage v-else-if="section === 'settings'" @providers-updated="loadModelProviders" />
+      <UsagePage v-else-if="section === 'usage'" />
       <ChapterEditorPage
         v-else-if="section === 'write' && activeNovel"
         v-model:draft-title="draftTitle"

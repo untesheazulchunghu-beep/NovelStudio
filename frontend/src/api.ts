@@ -80,8 +80,13 @@ export type ModelSettings = {
   maxTokens: number
   timeoutSec: number
   apiKeyConfigured: boolean
+  inputCostPerMillion: number
+  outputCostPerMillion: number
 }
-export type ModelSettingsInput = Omit<ModelSettings, 'apiKeyConfigured'> & {
+export type ModelSettingsInput = Omit<
+  ModelSettings,
+  'apiKeyConfigured' | 'inputCostPerMillion' | 'outputCostPerMillion'
+> & {
   apiKey: string
   clearApiKey: boolean
 }
@@ -100,7 +105,51 @@ export type ModelProviderCatalog = {
   defaultProviderId: string
   canManage: boolean
 }
-export type NovelTask = { id: string; novelId: string; kind: string; status: string; progress: number; error?: string }
+export type NovelTask = {
+  id: string
+  novelId: string
+  kind: string
+  status: string
+  progress: number
+  error?: string
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  estimatedCostUsd?: number
+  reportedTokenCalls?: number
+  estimatedTokenCalls?: number
+  costKnownCalls?: number
+  costUnknownCalls?: number
+  costKnown?: boolean
+}
+export type UsageTotals = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  estimatedCostUsd: number
+  reportedTokenCalls: number
+  estimatedTokenCalls: number
+  costKnownCalls: number
+  costUnknownCalls: number
+  costKnown: boolean
+}
+export type ModelUsageReport = {
+  summary: UsageTotals
+  novels: Array<UsageTotals & { novelId: string; novelTitle: string }>
+  users: Array<UsageTotals & { userId: string; userEmail: string }>
+  tasks: Array<
+    UsageTotals & {
+      taskId: string
+      novelId: string
+      novelTitle: string
+      userId: string
+      userEmail: string
+      kind: string
+      status: string
+      createdAt: string
+    }
+  >
+}
 export type ContinuityFinding = {
   chapterId: string
   chapterNumber: number
@@ -203,6 +252,7 @@ export const api = {
     request<{ ok: boolean; defaultProviderId: string }>(`/settings/llm/providers/${id}/default`, put({})),
   testModelProvider: (id: string, input: ModelProviderInput) =>
     request<{ ok: boolean; message: string }>('/settings/llm/providers/test', json({ id, ...input })),
+  modelUsage: () => request<ModelUsageReport>('/admin/usage'),
   novels: () => request<{ novels: Novel[] }>('/novels'),
   deletedNovels: () => request<{ novels: Novel[] }>('/novels/trash'),
   deleteNovel: (id: string) => request<{ ok: boolean }>(`/novels/${id}`, { method: 'DELETE' }),

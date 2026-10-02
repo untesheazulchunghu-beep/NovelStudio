@@ -20,26 +20,30 @@ import (
 )
 
 type ProviderProfileInput struct {
-	Name        string  `json:"name"`
-	BaseURL     string  `json:"baseUrl"`
-	Model       string  `json:"model"`
-	APIKey      string  `json:"apiKey"`
-	ClearAPIKey bool    `json:"clearApiKey"`
-	Temperature float64 `json:"temperature"`
-	MaxTokens   int     `json:"maxTokens"`
-	TimeoutSec  int     `json:"timeoutSec"`
+	Name                 string  `json:"name"`
+	BaseURL              string  `json:"baseUrl"`
+	Model                string  `json:"model"`
+	APIKey               string  `json:"apiKey"`
+	ClearAPIKey          bool    `json:"clearApiKey"`
+	Temperature          float64 `json:"temperature"`
+	MaxTokens            int     `json:"maxTokens"`
+	TimeoutSec           int     `json:"timeoutSec"`
+	InputCostPerMillion  float64 `json:"inputCostPerMillion"`
+	OutputCostPerMillion float64 `json:"outputCostPerMillion"`
 }
 
 type ProviderProfileView struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	BaseURL          string  `json:"baseUrl"`
-	Model            string  `json:"model"`
-	Temperature      float64 `json:"temperature"`
-	MaxTokens        int     `json:"maxTokens"`
-	TimeoutSec       int     `json:"timeoutSec"`
-	APIKeyConfigured bool    `json:"apiKeyConfigured"`
-	IsDefault        bool    `json:"isDefault"`
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	BaseURL              string  `json:"baseUrl"`
+	Model                string  `json:"model"`
+	Temperature          float64 `json:"temperature"`
+	MaxTokens            int     `json:"maxTokens"`
+	TimeoutSec           int     `json:"timeoutSec"`
+	InputCostPerMillion  float64 `json:"inputCostPerMillion"`
+	OutputCostPerMillion float64 `json:"outputCostPerMillion"`
+	APIKeyConfigured     bool    `json:"apiKeyConfigured"`
+	IsDefault            bool    `json:"isDefault"`
 }
 
 type providerProfile struct {
@@ -118,7 +122,8 @@ func NewProviderCatalog(db *sql.DB, encryptionKey []byte, encryptionKeyIsNew boo
 }
 
 func (c *ProviderCatalog) load() error {
-	rows, err := c.db.Query(`SELECT id, name, base_url, api_key_ciphertext, model, temperature, max_tokens, timeout_sec, is_default
+	rows, err := c.db.Query(`SELECT id, name, base_url, api_key_ciphertext, model, temperature, max_tokens, timeout_sec, is_default,
+		input_cost_per_million, output_cost_per_million
 		FROM model_providers ORDER BY is_default DESC, created_at, id`)
 	if err != nil {
 		return fmt.Errorf("read model providers: %w", err)
@@ -127,9 +132,11 @@ func (c *ProviderCatalog) load() error {
 	for rows.Next() {
 		var id, name, baseURL, encryptedKey, model string
 		var temperature float64
+		var inputCostPerMillion, outputCostPerMillion float64
 		var maxTokens, timeoutSec int
 		var isDefault bool
-		if err := rows.Scan(&id, &name, &baseURL, &encryptedKey, &model, &temperature, &maxTokens, &timeoutSec, &isDefault); err != nil {
+		if err := rows.Scan(&id, &name, &baseURL, &encryptedKey, &model, &temperature, &maxTokens, &timeoutSec, &isDefault,
+			&inputCostPerMillion, &outputCostPerMillion); err != nil {
 			return fmt.Errorf("read model provider: %w", err)
 		}
 		apiKey, err := c.openKey(id, encryptedKey)
@@ -137,12 +144,14 @@ func (c *ProviderCatalog) load() error {
 			return fmt.Errorf("decrypt model provider %q credentials; restore its LLM_ENCRYPTION_KEY: %w", id, err)
 		}
 		settings := RuntimeSettings{
-			BaseURL:     baseURL,
-			APIKey:      apiKey,
-			Model:       model,
-			Temperature: temperature,
-			MaxTokens:   maxTokens,
-			TimeoutSec:  timeoutSec,
+			BaseURL:              baseURL,
+			APIKey:               apiKey,
+			Model:                model,
+			Temperature:          temperature,
+			MaxTokens:            maxTokens,
+			TimeoutSec:           timeoutSec,
+			InputCostPerMillion:  inputCostPerMillion,
+			OutputCostPerMillion: outputCostPerMillion,
 		}
 		c.profiles[id] = c.makeProfile(id, name, settings, isDefault)
 		if isDefault {
@@ -255,14 +264,18 @@ func (c *ProviderCatalog) Save(id string, input ProviderProfileInput) (ProviderP
 		}
 	}
 	_, err = tx.Exec(`INSERT INTO model_providers (
-		id, name, base_url, api_key_ciphertext, model, temperature, max_tokens, timeout_sec, is_default, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		id, name, base_url, api_key_ciphertext, model, temperature, max_tokens, timeout_sec, is_default,
+		input_cost_per_million, output_cost_per_million, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url,
 		api_key_ciphertext = excluded.api_key_ciphertext, model = excluded.model,
 		temperature = excluded.temperature, max_tokens = excluded.max_tokens,
-		timeout_sec = excluded.timeout_sec, is_default = excluded.is_default, updated_at = excluded.updated_at`,
+		timeout_sec = excluded.timeout_sec, is_default = excluded.is_default,
+		input_cost_per_million = excluded.input_cost_per_million,
+		output_cost_per_million = excluded.output_cost_per_million, updated_at = excluded.updated_at`,
 		id, name, settings.BaseURL, encryptedKey, settings.Model, settings.Temperature, settings.MaxTokens,
-		settings.TimeoutSec, providerDefaultFlag(isDefault), now, now)
+		settings.TimeoutSec, providerDefaultFlag(isDefault), settings.InputCostPerMillion,
+		settings.OutputCostPerMillion, now, now)
 	if err != nil {
 		return ProviderProfileView{}, fmt.Errorf("save model provider: %w", err)
 	}
@@ -432,15 +445,17 @@ func (c *ProviderCatalog) openKey(id, value string) (string, error) {
 func (c *ProviderCatalog) makeProfile(id, name string, settings RuntimeSettings, isDefault bool) providerProfile {
 	return providerProfile{
 		view: ProviderProfileView{
-			ID:               id,
-			Name:             name,
-			BaseURL:          settings.BaseURL,
-			Model:            settings.Model,
-			Temperature:      settings.Temperature,
-			MaxTokens:        settings.MaxTokens,
-			TimeoutSec:       settings.TimeoutSec,
-			APIKeyConfigured: settings.APIKey != "",
-			IsDefault:        isDefault,
+			ID:                   id,
+			Name:                 name,
+			BaseURL:              settings.BaseURL,
+			Model:                settings.Model,
+			Temperature:          settings.Temperature,
+			MaxTokens:            settings.MaxTokens,
+			TimeoutSec:           settings.TimeoutSec,
+			InputCostPerMillion:  settings.InputCostPerMillion,
+			OutputCostPerMillion: settings.OutputCostPerMillion,
+			APIKeyConfigured:     settings.APIKey != "",
+			IsDefault:            isDefault,
 		},
 		settings: settings,
 		provider: newRuntimeProvider(settings),
@@ -454,6 +469,8 @@ func mergeProviderInput(current RuntimeSettings, exists bool, input ProviderProf
 	next.Temperature = input.Temperature
 	next.MaxTokens = input.MaxTokens
 	next.TimeoutSec = input.TimeoutSec
+	next.InputCostPerMillion = input.InputCostPerMillion
+	next.OutputCostPerMillion = input.OutputCostPerMillion
 	if input.ClearAPIKey {
 		if strings.TrimSpace(input.APIKey) != "" {
 			return RuntimeSettings{}, &SettingsValidationError{message: "清除密钥时不能同时填写新密钥"}
@@ -472,14 +489,16 @@ func mergeProviderInput(current RuntimeSettings, exists bool, input ProviderProf
 
 func providerProfileInput(name string, settings RuntimeSettings) ProviderProfileInput {
 	return ProviderProfileInput{
-		Name:        name,
-		BaseURL:     settings.BaseURL,
-		Model:       settings.Model,
-		APIKey:      settings.APIKey,
-		ClearAPIKey: settings.APIKey == "",
-		Temperature: settings.Temperature,
-		MaxTokens:   settings.MaxTokens,
-		TimeoutSec:  settings.TimeoutSec,
+		Name:                 name,
+		BaseURL:              settings.BaseURL,
+		Model:                settings.Model,
+		APIKey:               settings.APIKey,
+		ClearAPIKey:          settings.APIKey == "",
+		Temperature:          settings.Temperature,
+		MaxTokens:            settings.MaxTokens,
+		TimeoutSec:           settings.TimeoutSec,
+		InputCostPerMillion:  settings.InputCostPerMillion,
+		OutputCostPerMillion: settings.OutputCostPerMillion,
 	}
 }
 

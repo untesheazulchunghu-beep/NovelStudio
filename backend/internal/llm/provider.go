@@ -19,18 +19,32 @@ type Generator interface {
 }
 
 type Provider struct {
-	baseURL     string
-	apiKey      string
-	model       string
-	client      *http.Client
-	temperature float64
-	maxTokens   int
+	baseURL              string
+	apiKey               string
+	model                string
+	client               *http.Client
+	temperature          float64
+	maxTokens            int
+	inputCostPerMillion  float64
+	outputCostPerMillion float64
 }
 
 type Options struct {
-	Temperature float64
-	MaxTokens   int
-	Timeout     time.Duration
+	Temperature          float64
+	MaxTokens            int
+	Timeout              time.Duration
+	InputCostPerMillion  float64
+	OutputCostPerMillion float64
+}
+
+type GenerationUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Estimated        bool
+	Model            string
+	CostUSD          float64
+	CostKnown        bool
 }
 
 type GenerationError struct {
@@ -58,12 +72,14 @@ func New(baseURL, apiKey, model string, options ...Options) *Provider {
 		}
 	}
 	return &Provider{
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		apiKey:      apiKey,
-		model:       model,
-		client:      &http.Client{Timeout: option.Timeout},
-		temperature: option.Temperature,
-		maxTokens:   option.MaxTokens,
+		baseURL:              strings.TrimRight(baseURL, "/"),
+		apiKey:               apiKey,
+		model:                model,
+		client:               &http.Client{Timeout: option.Timeout},
+		temperature:          option.Temperature,
+		maxTokens:            option.MaxTokens,
+		inputCostPerMillion:  option.InputCostPerMillion,
+		outputCostPerMillion: option.OutputCostPerMillion,
 	}
 }
 
@@ -99,13 +115,18 @@ func (p *Provider) TestConnection(ctx context.Context) error {
 }
 
 func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string)) (string, error) {
+	text, _, err := p.GenerateWithUsage(ctx, prompt, emit)
+	return text, err
+}
+
+func (p *Provider) GenerateWithUsage(ctx context.Context, prompt string, emit func(string)) (string, GenerationUsage, error) {
 	if p.apiKey == "" {
 		text := "开发演示模式：任务已进入生成流程。请在后端配置 LLM_API_KEY、LLM_MODEL 和 LLM_BASE_URL 后启用真实模型生成。"
 		if strings.Contains(prompt, "工作流节点（review）") {
 			text = "审稿结论：通过"
 		}
 		emit(text)
-		return text, nil
+		return text, GenerationUsage{Model: p.model}, nil
 	}
 	endpoint := p.baseURL
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
@@ -123,8 +144,11 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 		system = "你是一位严谨的中文小说审稿人。只按用户要求检查此前输出并给出审稿结论，不要输出或修改章节正文。"
 	}
 	requestBody := map[string]any{
-		"model":       p.model,
-		"stream":      true,
+		"model":  p.model,
+		"stream": true,
+		"stream_options": map[string]any{
+			"include_usage": true,
+		},
 		"temperature": p.temperature,
 		"messages": []map[string]string{{
 			"role":    "system",
@@ -139,7 +163,7 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", err
+		return "", GenerationUsage{Model: p.model}, err
 	}
 	newRequest := func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -153,7 +177,7 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 	}
 	request, err := newRequest()
 	if err != nil {
-		return "", err
+		return "", GenerationUsage{Model: p.model}, err
 	}
 	var response *http.Response
 	for attempt := 0; attempt < 3; attempt++ {
@@ -166,24 +190,46 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 		}
 		if attempt == 2 {
 			if err != nil {
-				return "", requestFailure(err)
+				return "", GenerationUsage{Model: p.model}, requestFailure(err)
 			}
-			return "", classifiedError(response.StatusCode)
+			return "", GenerationUsage{Model: p.model}, classifiedError(response.StatusCode)
 		}
 		if err := waitForRetry(ctx, time.Duration(1<<attempt)*250*time.Millisecond); err != nil {
-			return "", requestFailure(err)
+			return "", GenerationUsage{Model: p.model}, requestFailure(err)
 		}
 		request, err = newRequest()
 		if err != nil {
-			return "", err
+			return "", GenerationUsage{Model: p.model}, err
+		}
+	}
+	if response.StatusCode == http.StatusBadRequest {
+		failureBody, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+		_ = response.Body.Close()
+		failureText := strings.ToLower(string(failureBody))
+		if strings.Contains(failureText, "stream_options") || strings.Contains(failureText, "include_usage") {
+			delete(requestBody, "stream_options")
+			body, err = json.Marshal(requestBody)
+			if err != nil {
+				return "", GenerationUsage{Model: p.model}, err
+			}
+			request, err = newRequest()
+			if err != nil {
+				return "", GenerationUsage{Model: p.model}, err
+			}
+			response, err = p.client.Do(request)
+			if err != nil {
+				return "", GenerationUsage{Model: p.model}, requestFailure(err)
+			}
 		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", classifiedError(response.StatusCode)
+		return "", GenerationUsage{Model: p.model}, classifiedError(response.StatusCode)
 	}
 
 	var output strings.Builder
+	usage := GenerationUsage{Model: p.model}
+	usageReported := false
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 4096), 4*1024*1024)
 	for scanner.Scan() {
@@ -193,10 +239,15 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
-			return output.String(), nil
+			return output.String(), p.completeUsage(usage, prompt, output.String(), usageReported), nil
 		}
 		var chunk struct {
-			Error   json.RawMessage `json:"error"`
+			Error json.RawMessage `json:"error"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -206,8 +257,14 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
+		if chunk.Usage != nil {
+			usageReported = true
+			usage.PromptTokens = max(0, chunk.Usage.PromptTokens)
+			usage.CompletionTokens = max(0, chunk.Usage.CompletionTokens)
+			usage.TotalTokens = max(0, chunk.Usage.TotalTokens)
+		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-			return output.String(), &GenerationError{message: "模型服务返回错误，请检查模型配置后重试"}
+			return output.String(), p.completeUsage(usage, prompt, output.String(), usageReported), &GenerationError{message: "模型服务返回错误，请检查模型配置后重试"}
 		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == "" {
 			continue
@@ -217,9 +274,67 @@ func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string
 		emit(delta)
 	}
 	if err := scanner.Err(); err != nil {
-		return output.String(), requestFailure(err)
+		return output.String(), p.completeUsage(usage, prompt, output.String(), usageReported), requestFailure(err)
 	}
-	return output.String(), nil
+	return output.String(), p.completeUsage(usage, prompt, output.String(), usageReported), nil
+}
+
+func (p *Provider) completeUsage(usage GenerationUsage, prompt, output string, usageReported bool) GenerationUsage {
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if !usageReported || usage.TotalTokens == 0 {
+		usage = EstimateUsage(prompt, output, usage.Model)
+	} else {
+		usage.Estimated = false
+	}
+	if p.inputCostPerMillion > 0 || p.outputCostPerMillion > 0 {
+		usage.CostKnown = true
+		usage.CostUSD = float64(usage.PromptTokens)*p.inputCostPerMillion/1_000_000 +
+			float64(usage.CompletionTokens)*p.outputCostPerMillion/1_000_000
+	}
+	return usage
+}
+
+// EstimateUsage provides a conservative fallback for generators that do not
+// return token counts. It counts non-ASCII runes individually and estimates
+// ASCII text at roughly one token per four characters.
+func EstimateUsage(prompt, output, model string) GenerationUsage {
+	promptTokens := estimateTokenCount(prompt)
+	completionTokens := estimateTokenCount(output)
+	totalTokens := promptTokens + completionTokens
+	return GenerationUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		Estimated:        totalTokens > 0,
+		Model:            model,
+	}
+}
+
+// estimateTokenCount is a fallback for OpenAI-compatible servers that omit
+// stream usage data. It counts non-ASCII runes individually and estimates
+// ASCII text at roughly one token per four characters.
+func estimateTokenCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	asciiRunes := 0
+	nonASCIITokens := 0
+	flushASCII := func() {
+		if asciiRunes > 0 {
+			nonASCIITokens += (asciiRunes + 3) / 4
+			asciiRunes = 0
+		}
+	}
+	for _, value := range text {
+		if value <= 0x7f {
+			asciiRunes++
+			continue
+		}
+		flushASCII()
+		nonASCIITokens++
+	}
+	flushASCII()
+	return nonASCIITokens
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {

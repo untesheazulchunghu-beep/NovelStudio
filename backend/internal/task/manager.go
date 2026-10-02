@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,15 +66,24 @@ type Event struct {
 }
 
 type Task struct {
-	ID         string `json:"id"`
-	NovelID    string `json:"novelId"`
-	WorkflowID string `json:"workflowId,omitempty"`
-	Kind       string `json:"kind"`
-	Status     string `json:"status"`
-	Progress   int    `json:"progress"`
-	Error      string `json:"error,omitempty"`
-	CreatedAt  string `json:"createdAt"`
-	UpdatedAt  string `json:"updatedAt"`
+	ID                  string  `json:"id"`
+	NovelID             string  `json:"novelId"`
+	WorkflowID          string  `json:"workflowId,omitempty"`
+	Kind                string  `json:"kind"`
+	Status              string  `json:"status"`
+	Progress            int     `json:"progress"`
+	Error               string  `json:"error,omitempty"`
+	PromptTokens        int     `json:"promptTokens"`
+	CompletionTokens    int     `json:"completionTokens"`
+	TotalTokens         int     `json:"totalTokens"`
+	EstimatedCostUSD    float64 `json:"estimatedCostUsd"`
+	ReportedTokenCalls  int     `json:"reportedTokenCalls"`
+	EstimatedTokenCalls int     `json:"estimatedTokenCalls"`
+	CostKnownCalls      int     `json:"costKnownCalls"`
+	CostUnknownCalls    int     `json:"costUnknownCalls"`
+	CostKnown           bool    `json:"costKnown"`
+	CreatedAt           string  `json:"createdAt"`
+	UpdatedAt           string  `json:"updatedAt"`
 }
 
 type Manager struct {
@@ -237,13 +247,20 @@ func (m *Manager) EventsAfter(taskID string, after int64) ([]Event, error) {
 func (m *Manager) Get(taskID string) (Task, error) {
 	var item Task
 	var workflowID sql.NullString
-	if err := m.db.QueryRow(`SELECT id, novel_id, workflow_id, kind, status, progress, error_text, created_at, updated_at FROM tasks WHERE id = ?`, taskID).
-		Scan(&item.ID, &item.NovelID, &workflowID, &item.Kind, &item.Status, &item.Progress, &item.Error, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := m.db.QueryRow(`SELECT id, novel_id, workflow_id, kind, status, progress, error_text,
+		prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+		reported_token_calls, estimated_token_calls, cost_known_calls, cost_unknown_calls,
+		created_at, updated_at FROM tasks WHERE id = ?`, taskID).
+		Scan(&item.ID, &item.NovelID, &workflowID, &item.Kind, &item.Status, &item.Progress, &item.Error,
+			&item.PromptTokens, &item.CompletionTokens, &item.TotalTokens, &item.EstimatedCostUSD,
+			&item.ReportedTokenCalls, &item.EstimatedTokenCalls, &item.CostKnownCalls, &item.CostUnknownCalls,
+			&item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Task{}, err
 	}
 	if workflowID.Valid {
 		item.WorkflowID = workflowID.String
 	}
+	item.CostKnown = item.CostKnownCalls > 0 && item.CostUnknownCalls == 0
 	return item, nil
 }
 
@@ -297,10 +314,13 @@ func (m *Manager) run(ctx context.Context, request Request) {
 		}
 		prompt := buildPrompt(request, promptChapter)
 		tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-		text, err, demoMode := m.generate(ctx, request.ProviderID, prompt, func(delta string) {
+		text, usage, err, demoMode := m.generate(ctx, request.ProviderID, prompt, func(delta string) {
 			tokenBatch.add(delta)
 		})
 		tokenBatch.flush()
+		m.recordUsage(request.ID, usage, map[string]any{
+			"chapterId": chapter.ID, "chapterNumber": chapter.Number, "kind": "generate",
+		})
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
 				m.emit(request.ID, "chapter.canceled", map[string]any{"chapterId": chapter.ID, "chapterNumber": chapter.Number})
@@ -348,7 +368,7 @@ func (m *Manager) run(ctx context.Context, request Request) {
 
 // ComposeChapterMemory asks the injected generator for the four memory fields.
 func (m *Manager) ComposeChapterMemory(ctx context.Context, chapter Chapter, body string) (ChapterMemory, error) {
-	raw, err, demoMode := m.generate(ctx, "", MemoryPrompt(chapter, body), func(string) {})
+	raw, _, err, demoMode := m.generate(ctx, "", MemoryPrompt(chapter, body), func(string) {})
 	if err != nil {
 		return ChapterMemory{}, err
 	}
@@ -394,28 +414,43 @@ func (m *Manager) demoModeFor(providerID string) bool {
 	return ok && generator.DemoMode()
 }
 
-func (m *Manager) generate(ctx context.Context, providerID, prompt string, emit func(string)) (string, error, bool) {
+func (m *Manager) generate(ctx context.Context, providerID, prompt string, emit func(string)) (string, llm.GenerationUsage, error, bool) {
+	usageGenerator, supportsUsage := m.generator.(interface {
+		GenerateWithUsageFor(context.Context, string, string, func(string)) (string, llm.GenerationUsage, error, bool)
+	})
+	if supportsUsage {
+		return usageGenerator.GenerateWithUsageFor(ctx, providerID, prompt, emit)
+	}
 	generatorWithProvider, hasProvider := m.generator.(interface {
 		GenerateWithModeFor(context.Context, string, string, func(string)) (string, error, bool)
 	})
 	if hasProvider {
-		return generatorWithProvider.GenerateWithModeFor(ctx, providerID, prompt, emit)
+		text, err, demo := generatorWithProvider.GenerateWithModeFor(ctx, providerID, prompt, emit)
+		return text, estimateLegacyUsage(prompt, text, demo), err, demo
 	}
 	generator, ok := m.generator.(interface {
 		GenerateWithMode(context.Context, string, func(string)) (string, error, bool)
 	})
 	if ok {
 		if providerID != "" {
-			return "", errors.New("selected model provider is unavailable"), true
+			return "", llm.GenerationUsage{}, errors.New("selected model provider is unavailable"), true
 		}
-		return generator.GenerateWithMode(ctx, prompt, emit)
+		text, err, demo := generator.GenerateWithMode(ctx, prompt, emit)
+		return text, estimateLegacyUsage(prompt, text, demo), err, demo
 	}
 	if providerID != "" {
-		return "", errors.New("selected model provider is unavailable"), true
+		return "", llm.GenerationUsage{}, errors.New("selected model provider is unavailable"), true
 	}
 	demoMode := m.demoMode()
 	text, err := m.generator.Generate(ctx, prompt, emit)
-	return text, err, demoMode
+	return text, estimateLegacyUsage(prompt, text, demoMode), err, demoMode
+}
+
+func estimateLegacyUsage(prompt, output string, demoMode bool) llm.GenerationUsage {
+	if demoMode {
+		return llm.GenerationUsage{}
+	}
+	return llm.EstimateUsage(prompt, output, "")
 }
 
 func tailRunes(value string, limit int) string {
@@ -524,16 +559,87 @@ func (m *Manager) emit(taskID, eventType string, data map[string]any) {
 		return
 	}
 	event := Event{TaskID: taskID, Sequence: sequence, Type: eventType, Data: data, CreatedAt: createdAt}
+	m.deliver(event)
+}
+
+func (m *Manager) deliver(event Event) {
 	m.mu.Lock()
-	for channel := range m.subs[taskID] {
+	for channel := range m.subs[event.TaskID] {
 		select {
 		case channel <- event:
 		default:
 			close(channel)
-			delete(m.subs[taskID], channel)
+			delete(m.subs[event.TaskID], channel)
 		}
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) recordUsage(taskID string, usage llm.GenerationUsage, details map[string]any) {
+	usage.PromptTokens = max(0, usage.PromptTokens)
+	usage.CompletionTokens = max(0, usage.CompletionTokens)
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if usage.TotalTokens == 0 {
+		return
+	}
+	if math.IsNaN(usage.CostUSD) || math.IsInf(usage.CostUSD, 0) || usage.CostUSD < 0 {
+		usage.CostUSD = 0
+		usage.CostKnown = false
+	}
+	data := map[string]any{
+		"promptTokens": usage.PromptTokens, "completionTokens": usage.CompletionTokens,
+		"totalTokens": usage.TotalTokens, "estimated": usage.Estimated,
+		"model": usage.Model, "costUsd": usage.CostUSD, "costKnown": usage.CostKnown,
+	}
+	for key, value := range details {
+		data[key] = value
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("task %s usage event encoding failed: %v", taskID, err)
+		return
+	}
+
+	m.eventMu.Lock()
+	defer m.eventMu.Unlock()
+	sequence := m.sequences[taskID] + 1
+	createdAt := database.Now()
+	tx, err := m.db.Begin()
+	if err != nil {
+		log.Printf("task %s usage transaction failed: %v", taskID, err)
+		return
+	}
+	reportedCalls, estimatedCalls := 1, 0
+	if usage.Estimated {
+		reportedCalls, estimatedCalls = 0, 1
+	}
+	knownCalls, unknownCalls := 0, 1
+	if usage.CostKnown {
+		knownCalls, unknownCalls = 1, 0
+	}
+	_, err = tx.Exec(`UPDATE tasks SET prompt_tokens = prompt_tokens + ?, completion_tokens = completion_tokens + ?,
+		total_tokens = total_tokens + ?, estimated_cost_usd = estimated_cost_usd + ?,
+		reported_token_calls = reported_token_calls + ?, estimated_token_calls = estimated_token_calls + ?,
+		cost_known_calls = cost_known_calls + ?, cost_unknown_calls = cost_unknown_calls + ?, updated_at = ?
+		WHERE id = ?`, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.CostUSD,
+		reportedCalls, estimatedCalls, knownCalls, unknownCalls, createdAt, taskID)
+	if err == nil {
+		_, err = tx.Exec(`INSERT INTO task_events (task_id, sequence, event_type, payload_json, created_at) VALUES (?, ?, 'task.usage', ?, ?)`,
+			taskID, sequence, string(payload), createdAt)
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		log.Printf("task %s usage persistence failed: %v", taskID, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("task %s usage commit failed: %v", taskID, err)
+		return
+	}
+	m.sequences[taskID] = sequence
+	m.deliver(Event{
+		TaskID: taskID, Sequence: sequence, Type: "task.usage", Data: data, CreatedAt: createdAt,
+	})
 }
 
 type tokenBatcher struct {

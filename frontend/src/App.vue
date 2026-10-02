@@ -6,6 +6,7 @@ import {
   connectTask,
   type Chapter,
   type ChapterRevision,
+  type ContinuityFinding,
   type GraphEdge,
   type GraphNode,
   type Member,
@@ -121,6 +122,7 @@ const reviewItems = ref<
     quoteVerbatim: boolean
   }>
 >([])
+const continuityFindings = ref<ContinuityFinding[]>([])
 const retryingTask = ref(false)
 const demoMode = ref(false)
 const streamText = ref('')
@@ -1198,6 +1200,41 @@ async function startReview() {
   }
 }
 
+async function startContinuityCheck() {
+  if (!activeNovel.value || !canEdit.value) return
+  if (activeSaveConflict.value) {
+    notify('请先处理当前章节的版本冲突，再启动连续性检查。', true)
+    return
+  }
+  if (savingChapter.value) {
+    notify('章节正在保存，请稍后再启动连续性检查。', true)
+    return
+  }
+  if (hasUnsavedChanges()) {
+    await persistChapterDraft(false)
+    if (hasUnsavedChanges() || activeSaveConflict.value) return
+  }
+  const ids = selectedChapterIds.value.length
+    ? selectedChapterIds.value
+    : activeChapter.value
+      ? [activeChapter.value.id]
+      : []
+  if (!ids.length) {
+    notify('请先选择至少一个章节', true)
+    return
+  }
+  try {
+    const task = await api.createContinuityTask(
+      activeNovel.value.id,
+      ids,
+      runInstruction.value.trim() || '检查人物状态、时间线与设定冲突。',
+    )
+    await startTask(task)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '创建连续性检查失败', true)
+  }
+}
+
 async function runWorkflow() {
   if (!activeNovel.value || !canEdit.value) return
   const ids = workflowChapterIds.value.length
@@ -1231,6 +1268,7 @@ async function startTask(task: NovelTask) {
   chapterStates.value = {}
   nodeProgress.value = []
   reviewItems.value = []
+  continuityFindings.value = []
   retryingTask.value = false
   demoMode.value = false
   streamText.value = ''
@@ -1253,6 +1291,7 @@ async function resumeTask(task: NovelTask) {
     chapterStates.value = {}
     nodeProgress.value = []
     reviewItems.value = []
+    continuityFindings.value = []
     retryingTask.value = false
     demoMode.value = false
     streamText.value = ''
@@ -1374,6 +1413,27 @@ function handleTaskEvent(event: TaskEvent) {
       })
     }
   }
+  if (event.type === 'continuity.findings' && Array.isArray(data.items)) {
+    for (const item of data.items) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as Record<string, unknown>
+      continuityFindings.value.push({
+        chapterId: typeof data.chapterId === 'string' ? data.chapterId : '',
+        chapterNumber: typeof data.chapterNumber === 'number' ? data.chapterNumber : 0,
+        title: typeof data.title === 'string' ? data.title : '',
+        category: typeof row.category === 'string' ? row.category : '未分类',
+        subject: typeof row.subject === 'string' ? row.subject : '',
+        issue: typeof row.issue === 'string' ? row.issue : '',
+        currentQuote: typeof row.currentQuote === 'string' ? row.currentQuote : '',
+        referenceSource: typeof row.referenceSource === 'string' ? row.referenceSource : '',
+        referenceQuote: typeof row.referenceQuote === 'string' ? row.referenceQuote : '',
+        confidence: typeof row.confidence === 'string' ? row.confidence : '未说明',
+        status: typeof row.status === 'string' ? row.status : '待核实',
+        currentQuoteVerbatim: row.currentQuoteVerbatim === true,
+        referenceQuoteVerbatim: row.referenceQuoteVerbatim === true,
+      })
+    }
+  }
   if (event.type === 'node.finished' && typeof data.nodeId === 'string') {
     const status = typeof data.status === 'string' ? data.status : 'succeeded'
     for (let index = nodeProgress.value.length - 1; index >= 0; index -= 1) {
@@ -1404,17 +1464,14 @@ function handleTaskEvent(event: TaskEvent) {
     if (['completed', 'failed', 'canceled', 'interrupted'].includes(status)) {
       taskProgress.value = status === 'completed' ? 100 : taskProgress.value
       void refreshNovelData()
-      if (status === 'completed')
-        notify(
-          activeTask.value?.kind === 'review'
-            ? '审稿清单已完成，正文未改动'
-            : demoMode.value
-              ? '演示任务完成，生成内容未自动写入'
-              : activeNovel.value?.approvalMode === 'auto'
-                ? '生成完成，章节已自动写入'
-                : '生成完成，提案已进入审核区',
-        )
-      else if (status === 'failed') notify(typeof data.message === 'string' ? data.message : '生成失败', true)
+      if (status === 'completed') {
+        let successMessage = '生成完成，提案已进入审核区'
+        if (activeTask.value?.kind === 'continuity') successMessage = '连续性检查完成，正文未改动'
+        else if (activeTask.value?.kind === 'review') successMessage = '审稿清单已完成，正文未改动'
+        else if (demoMode.value) successMessage = '演示任务完成，生成内容未自动写入'
+        else if (activeNovel.value?.approvalMode === 'auto') successMessage = '生成完成，章节已自动写入'
+        notify(successMessage)
+      } else if (status === 'failed') notify(typeof data.message === 'string' ? data.message : '生成失败', true)
       else if (status === 'canceled') notify('创作任务已取消')
       else if (status === 'interrupted') notify('服务器重启后该任务已中断，可重新发起生成', true)
       closeTaskSocket()
@@ -1759,6 +1816,7 @@ onBeforeUnmount(closeTaskSocket)
         @save-guide="saveWritingGuide"
         @start-batch="startBatch"
         @start-review="startReview"
+        @start-continuity-check="startContinuityCheck"
         @resume-task="resumeTask"
         @open-knowledge="section = 'knowledge'"
       >
@@ -1770,6 +1828,7 @@ onBeforeUnmount(closeTaskSocket)
             :chapter-progress="chapterProgress"
             :node-progress="nodeProgress"
             :review-items="reviewItems"
+            :continuity-findings="continuityFindings"
             :retrying="retryingTask"
             :can-edit="canEdit"
             :stream-text="streamText"

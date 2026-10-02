@@ -509,6 +509,193 @@ func AssembleChapterContext(budget int, chapterNumber int, blueprint, header str
 	}
 }
 
+// AssembleContinuityContext selects current graph facts and finalized chapter
+// memories using the chapter text itself as the relevance query. Unlike the
+// generation context, it includes the structured character and setting fields
+// from memories so the reviewer can compare those details against the draft.
+func AssembleContinuityContext(budget, chapterNumber int, chapterText, header string, memories []StoredMemory, entities []StoredEntity, relations []StoredRelation, threads []StoredThread) AssembledContext {
+	if budget < 0 {
+		budget = 0
+	}
+	header = strings.TrimSpace(header)
+	if header != "" {
+		header += "\n"
+	}
+	headerRunes := len([]rune(header))
+	if headerRunes > budget {
+		header = string([]rune(header)[:budget])
+		headerRunes = budget
+	}
+	shares := splitBudget(budget-headerRunes, 2)
+
+	matchedLabels := make([]string, 0)
+	matchedSet := make(map[string]bool)
+	graphPieces := make([]contextPiece, 0)
+	for _, entity := range entities {
+		label := strings.TrimSpace(entity.Label)
+		if label == "" || !strings.Contains(chapterText, label) {
+			continue
+		}
+		if !matchedSet[label] {
+			matchedSet[label] = true
+			matchedLabels = append(matchedLabels, label)
+		}
+		manifest := "图谱" + kindLabel(entity.Kind) + "设定：" + label
+		graphPieces = append(graphPieces, contextPiece{
+			Label: manifest,
+			Body:  manifest + "\n事实：" + strings.TrimSpace(entity.Summary) + "\n",
+			Kind:  "entity",
+		})
+	}
+	for _, relation := range relations {
+		if !matchedSet[strings.TrimSpace(relation.Source)] && !matchedSet[strings.TrimSpace(relation.Target)] {
+			continue
+		}
+		manifest := "图谱关系：" + relation.Source + " —" + relation.Relation + "→ " + relation.Target
+		graphPieces = append(graphPieces, contextPiece{
+			Label: manifest,
+			Body:  manifest + "\n事实：" + strings.TrimSpace(relation.Summary) + "\n",
+			Kind:  "relation",
+		})
+	}
+	for _, thread := range threads {
+		if thread.Status == "recovered" || strings.TrimSpace(thread.Name) == "" {
+			continue
+		}
+		relevant := strings.Contains(chapterText, thread.Name)
+		for _, label := range matchedLabels {
+			if strings.Contains(thread.Name+"\n"+thread.Subjects+"\n"+thread.Detail, label) {
+				relevant = true
+				break
+			}
+		}
+		if !relevant {
+			continue
+		}
+		manifest := "未回收伏笔：" + thread.Name
+		body := manifest
+		if detail := strings.TrimSpace(thread.Detail); detail != "" {
+			body += "\n细节：" + detail
+		}
+		if subjects := strings.TrimSpace(thread.Subjects); subjects != "" {
+			body += "\n相关人物或地点：" + subjects
+		}
+		graphPieces = append(graphPieces, contextPiece{Label: manifest, Body: body + "\n", Kind: "thread"})
+	}
+
+	type rankedMemory struct {
+		memory StoredMemory
+		score  int
+	}
+	prior := make([]rankedMemory, 0, len(memories))
+	for _, memory := range memories {
+		if memory.ChapterNumber >= chapterNumber {
+			continue
+		}
+		score := 0
+		for _, label := range matchedLabels {
+			if strings.Contains(memory.Characters, label) {
+				score += 4
+			}
+			if strings.Contains(memory.Summary, label) {
+				score += 2
+			}
+			if strings.Contains(memory.NewSettings+"\n"+memory.Foreshadowing, label) {
+				score++
+			}
+		}
+		prior = append(prior, rankedMemory{memory: memory, score: score})
+	}
+	sort.Slice(prior, func(i, j int) bool {
+		if prior[i].score != prior[j].score {
+			return prior[i].score > prior[j].score
+		}
+		if prior[i].memory.ChapterNumber != prior[j].memory.ChapterNumber {
+			return prior[i].memory.ChapterNumber > prior[j].memory.ChapterNumber
+		}
+		return prior[i].memory.ChapterID > prior[j].memory.ChapterID
+	})
+	if len(matchedLabels) == 0 {
+		if len(prior) > RecentSummaryWindow {
+			prior = prior[:RecentSummaryWindow]
+		}
+	} else {
+		selected := make([]rankedMemory, 0, len(prior))
+		seen := make(map[string]bool)
+		for _, item := range prior {
+			if item.score > 0 {
+				selected = append(selected, item)
+				seen[item.memory.ChapterID] = true
+			}
+		}
+		fallbacks := 0
+		for _, item := range prior {
+			if seen[item.memory.ChapterID] || fallbacks >= 4 {
+				continue
+			}
+			selected = append(selected, item)
+			seen[item.memory.ChapterID] = true
+			fallbacks++
+		}
+		prior = selected
+	}
+	memoryPieces := make([]contextPiece, 0, len(prior))
+	for _, item := range prior {
+		memory := item.memory
+		manifest := "第" + strconv.Itoa(memory.ChapterNumber) + "章《" + memory.Title + "》定稿记忆"
+		body := manifest + "\n"
+		if memory.Summary != "" {
+			body += "摘要：" + memory.Summary + "\n"
+		}
+		if memory.Characters != "" {
+			body += "出场人物：" + memory.Characters + "\n"
+		}
+		if memory.NewSettings != "" {
+			body += "新增设定：" + memory.NewSettings + "\n"
+		}
+		if memory.Foreshadowing != "" {
+			body += "伏笔变化：" + memory.Foreshadowing + "\n"
+		}
+		memoryPieces = append(memoryPieces, contextPiece{Label: manifest, Body: body, Kind: "memory"})
+	}
+
+	memoryText, memoryKept, memoryDropped := fitSection("相关定稿章节记忆：", memoryPieces, shares[0])
+	graphText, graphKept, graphDropped := fitSection("相关图谱事实与伏笔：", graphPieces, shares[1])
+	dropped := make([]string, 0, len(memoryDropped)+len(graphDropped))
+	for _, piece := range memoryDropped {
+		dropped = append(dropped, dropLabel(piece.Label, "超出上下文预算"))
+	}
+	truncatedEntities := 0
+	truncatedRelations := 0
+	for _, piece := range graphDropped {
+		dropped = append(dropped, dropLabel(piece.Label, "超出上下文预算"))
+		switch piece.Kind {
+		case "entity":
+			truncatedEntities++
+		case "relation":
+			truncatedRelations++
+		}
+	}
+	included := make([]string, 0, len(memoryKept)+len(graphKept))
+	for _, piece := range memoryKept {
+		included = append(included, piece.Label)
+	}
+	for _, piece := range graphKept {
+		included = append(included, piece.Label)
+	}
+	text := header + memoryText + graphText
+	if len([]rune(text)) > budget {
+		text = string([]rune(text)[:budget])
+	}
+	return AssembledContext{
+		Text:               text,
+		Included:           included,
+		Dropped:            dropped,
+		TruncatedEntities:  truncatedEntities,
+		TruncatedRelations: truncatedRelations,
+	}
+}
+
 func splitBudget(total, parts int) []int {
 	shares := make([]int, parts)
 	if total <= 0 || parts <= 0 {

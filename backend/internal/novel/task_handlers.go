@@ -56,6 +56,12 @@ func (s *Server) createBatchTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		kind = "review"
+	case "continuity":
+		if s.tasks.DemoMode() {
+			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再启动连续性检查")
+			return
+		}
+		kind = "continuity"
 	default:
 		writeError(w, http.StatusBadRequest, "INVALID_TASK", "未知的任务类型")
 		return
@@ -209,8 +215,15 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	if len(selected) > 0 || len(chapters) != len(input.ChapterIDs) {
 		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_CHAPTERS", message: "章节选择无效或包含其他小说的章节"}
 	}
+	if kind == "continuity" {
+		for _, chapter := range chapters {
+			if strings.TrimSpace(chapter.Body) == "" {
+				return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "EMPTY_CHAPTER", message: "连续性检查需要章节正文，请先保存正文后再试"}
+			}
+		}
+	}
 	contextSources := []string{"小说题材与简介"}
-	if strings.TrimSpace(writingGuide) != "" {
+	if strings.TrimSpace(writingGuide) != "" && kind != "continuity" {
 		contextSources = append(contextSources, "作品写作指南")
 	}
 	for _, chapter := range chapters {
@@ -268,6 +281,18 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	if err := graphTx.Commit(); err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "读取知识图谱失败"}
 	}
+	if kind == "continuity" {
+		for _, chapter := range chapters {
+			var currentRevision int
+			err := s.db.QueryRowContext(ctx, `SELECT revision FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapter.ID, novelID).Scan(&currentRevision)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && currentRevision != chapter.Revision) {
+				return task.Task{}, &apiFailure{status: http.StatusConflict, code: "CHAPTER_CHANGED", message: "连续性检查准备期间章节已更新，请重新发起检查"}
+			}
+			if err != nil {
+				return task.Task{}, &apiFailure{status: http.StatusInternalServerError, code: "DATABASE_ERROR", message: "确认连续性检查章节失败"}
+			}
+		}
+	}
 	header := "小说：《" + title + "》\n题材：" + genre + "\n简介：" + summary
 	budget := s.contextBudgetRunes()
 	included := make([]string, 0)
@@ -280,7 +305,12 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	for index := range chapters {
 		chapter := &chapters[index]
 		blueprint := strings.Join([]string{chapter.Title, chapter.Goal, chapter.KeyEvents, chapter.SuspenseHook}, "\n")
-		assembled := task.AssembleChapterContext(budget, chapter.Number, blueprint, header, memories, entities, relations, threads)
+		var assembled task.AssembledContext
+		if kind == "continuity" {
+			assembled = task.AssembleContinuityContext(budget, chapter.Number, blueprint+"\n"+chapter.Body, header, memories, entities, relations, threads)
+		} else {
+			assembled = task.AssembleChapterContext(budget, chapter.Number, blueprint, header, memories, entities, relations, threads)
+		}
 		chapter.InjectedContext = assembled.Text
 		if index == 0 {
 			knowledge = assembled.Text
@@ -311,7 +341,7 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 		},
 		WritingGuide: writingGuide, ApprovalMode: approvalMode, Chapters: chapters, Nodes: input.Nodes, Kind: kind,
 	}
-	if kind == "review" {
+	if kind == "review" || kind == "continuity" {
 		request.Nodes = nil
 	}
 	requestJSON, err := json.Marshal(request)
@@ -384,8 +414,12 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "TASK_ALREADY_RETRIED", "该任务已经创建过重试任务")
 		return
 	}
-	if kind == "review" && s.tasks.DemoMode() {
-		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再重试关键事件审稿")
+	if (kind == "review" || kind == "continuity") && s.tasks.DemoMode() {
+		message := "请先配置真实模型，再重试关键事件审稿"
+		if kind == "continuity" {
+			message = "请先配置真实模型，再重试连续性检查"
+		}
+		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", message)
 		return
 	}
 	var request task.Request
@@ -393,15 +427,19 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "TASK_REQUEST_UNAVAILABLE", "该任务缺少可恢复的请求快照，请重新发起生成")
 		return
 	}
-	reviewed := make(map[string]bool, len(request.ReviewOutcomes))
+	reviewed := make(map[string]bool, len(request.ReviewOutcomes)+len(request.ContinuityOutcomes))
 	if kind == "review" {
 		for _, outcome := range request.ReviewOutcomes {
+			reviewed[outcome.ChapterID] = true
+		}
+	} else if kind == "continuity" {
+		for _, outcome := range request.ContinuityOutcomes {
 			reviewed[outcome.ChapterID] = true
 		}
 	}
 	chapters := make([]task.Chapter, 0, len(request.Chapters))
 	for index, chapter := range request.Chapters {
-		if kind == "review" {
+		if kind == "review" || kind == "continuity" {
 			if reviewed[chapter.ID] {
 				continue
 			}
@@ -415,7 +453,7 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		if index > 0 && request.Chapters[index-1].Number+1 == chapter.Number {
+		if kind != "review" && kind != "continuity" && index > 0 && request.Chapters[index-1].Number+1 == chapter.Number {
 			var previousText string
 			err := tx.QueryRowContext(r.Context(), `SELECT proposed_text FROM proposals WHERE task_id = ? AND chapter_id = ?`, originalID, request.Chapters[index-1].ID).Scan(&previousText)
 			if err == nil {

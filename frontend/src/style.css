@@ -2028,6 +2028,40 @@ select {
 .chapter-progress-item small.running {
   color: #b49045;
 }
+.continuity-finding-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+.continuity-finding {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid #e7eadf;
+  border-radius: 7px;
+  color: #68766d;
+  background: #fbfcf9;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.continuity-finding-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: #53665a;
+}
+.continuity-finding p {
+  margin: 0;
+}
+.continuity-finding .continuity-subject {
+  color: #8a7650;
+}
+.continuity-finding small {
+  color: #8a958d;
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
 .context-truncation {
   margin: 10px 0;
   padding: 8px 10px;

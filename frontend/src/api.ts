@@ -71,6 +71,21 @@ export type ModelSettingsInput = Omit<ModelSettings, 'apiKeyConfigured'> & {
 }
 export type ModelSettingsResponse = { settings: ModelSettings; canManage: boolean }
 export type NovelTask = { id: string; novelId: string; kind: string; status: string; progress: number; error?: string }
+export type ContinuityFinding = {
+  chapterId: string
+  chapterNumber: number
+  title: string
+  category: string
+  subject: string
+  issue: string
+  currentQuote: string
+  referenceSource: string
+  referenceQuote: string
+  confidence: string
+  status: string
+  currentQuoteVerbatim: boolean
+  referenceQuoteVerbatim: boolean
+}
 export type Proposal = {
   id: string
   taskId: string
@@ -231,6 +246,8 @@ export const api = {
     request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction })),
   createReviewTask: (novelId: string, chapterIds: string[], instruction: string) =>
     request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, kind: 'review' })),
+  createContinuityTask: (novelId: string, chapterIds: string[], instruction: string) =>
+    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, kind: 'continuity' })),
   tasks: (novelId: string) => request<{ tasks: NovelTask[] }>(`/novels/${novelId}/tasks`),
   task: (taskId: string) => request<NovelTask>(`/tasks/${taskId}`),
   cancelTask: (taskId: string) => request<{ ok: boolean }>(`/tasks/${taskId}/cancel`, json({})),

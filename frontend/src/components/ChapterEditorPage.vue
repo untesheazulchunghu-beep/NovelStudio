@@ -56,6 +56,7 @@ const emit = defineEmits<{
   saveGuide: []
   startBatch: []
   startReview: []
+  startContinuityCheck: []
   resumeTask: [task: NovelTask]
   openKnowledge: []
 }>()
@@ -343,6 +344,13 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               >
                 审稿清单
               </button>
+              <button
+                class="button secondary"
+                :disabled="!canEdit || !chapters.length || activeTaskRunning"
+                @click="emit('startContinuityCheck')"
+              >
+                连续性检查
+              </button>
             </div>
             <p class="assistant-hint">
               将使用小说设定与知识图谱作为上下文。{{
@@ -413,7 +421,13 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               <span class="task-dot" :class="item.status"></span>
               <div>
                 <strong>{{
-                  item.kind === 'workflow' ? '工作流执行' : item.kind === 'review' ? '关键事件审稿' : '批量章节生成'
+                  item.kind === 'workflow'
+                    ? '工作流执行'
+                    : item.kind === 'review'
+                      ? '关键事件审稿'
+                      : item.kind === 'continuity'
+                        ? '连续性检查'
+                        : '批量章节生成'
                 }}</strong>
                 <small>{{
                   item.status === 'completed'

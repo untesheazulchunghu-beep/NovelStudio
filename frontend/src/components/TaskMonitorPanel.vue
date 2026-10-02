@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { NovelTask } from '../api'
+import type { ContinuityFinding, NovelTask } from '../api'
 
 defineProps<{
   task: NovelTask | null
@@ -15,6 +15,7 @@ defineProps<{
     modelJudgment: string
     quoteVerbatim: boolean
   }>
+  continuityFindings: ContinuityFinding[]
   retrying: boolean
   canEdit: boolean
   streamText: string
@@ -27,6 +28,52 @@ const emit = defineEmits<{
   cancel: []
   retry: []
 }>()
+
+function taskTitle(task: NovelTask | null) {
+  if (!task) return ''
+  const titles: Record<string, Record<string, string>> = {
+    continuity: {
+      completed: '连续性检查已完成',
+      failed: '连续性检查失败',
+      canceled: '连续性检查已取消',
+      interrupted: '连续性检查已中断',
+      running: '正在检查连续性',
+      queued: '正在检查连续性',
+    },
+    review: {
+      completed: '审稿清单已完成',
+      failed: '审稿清单失败',
+      canceled: '审稿清单已取消',
+      interrupted: '审稿清单已中断',
+      running: '正在核对关键事件',
+      queued: '正在核对关键事件',
+    },
+  }
+  const knownTitle = titles[task.kind]?.[task.status]
+  if (knownTitle) return knownTitle
+  if (task.status === 'completed') return '生成任务已完成'
+  if (task.status === 'failed') return '生成任务失败'
+  if (task.status === 'canceled') return '生成任务已取消'
+  if (task.status === 'interrupted') return '生成任务已中断'
+  return '正在为你构建章节'
+}
+
+function retryLabel(task: NovelTask) {
+  if (task.kind === 'workflow') return '重试未完成节点'
+  if (task.kind === 'review') return '重试审稿'
+  if (task.kind === 'continuity') return '重试连续性检查'
+  return '重试未完成章节'
+}
+
+function chapterStatusLabel(task: NovelTask, status: string) {
+  if (status === 'completed') return '已完成'
+  if (status === 'failed') return '失败，可重试'
+  if (status === 'canceled') return '已取消'
+  if (status === 'queued') return '等待中'
+  if (task.kind === 'continuity') return '检查中'
+  if (task.kind === 'review') return '审稿中'
+  return '生成中'
+}
 </script>
 
 <template>
@@ -36,30 +83,16 @@ const emit = defineEmits<{
     </p>
     <div class="task-panel-head">
       <div>
-        <span class="eyebrow">LIVE GENERATION</span>
-        <h3>
+        <span class="eyebrow">
           {{
-            task.kind === 'review'
-              ? task.status === 'completed'
-                ? '审稿清单已完成'
-                : task.status === 'failed'
-                  ? '审稿清单失败'
-                  : task.status === 'canceled'
-                    ? '审稿清单已取消'
-                    : task.status === 'interrupted'
-                      ? '审稿清单已中断'
-                      : '正在核对关键事件'
-              : task.status === 'completed'
-                ? '生成任务已完成'
-                : task.status === 'failed'
-                  ? '生成任务失败'
-                  : task.status === 'canceled'
-                    ? '生成任务已取消'
-                    : task.status === 'interrupted'
-                      ? '生成任务已中断'
-                      : '正在为你构建章节'
+            task.kind === 'continuity'
+              ? 'CONTINUITY REVIEW'
+              : task.kind === 'review'
+                ? 'KEY EVENT REVIEW'
+                : 'LIVE GENERATION'
           }}
-        </h3>
+        </span>
+        <h3>{{ taskTitle(task) }}</h3>
       </div>
       <div class="task-panel-actions">
         <span class="task-percent">{{ progress }}%</span>
@@ -69,15 +102,7 @@ const emit = defineEmits<{
           :disabled="retrying"
           @click="emit('retry')"
         >
-          {{
-            retrying
-              ? '准备重试…'
-              : task.kind === 'workflow'
-                ? '重试未完成节点'
-                : task.kind === 'review'
-                  ? '重试审稿'
-                  : '重试未完成章节'
-          }}
+          {{ retrying ? '准备重试…' : retryLabel(task) }}
         </button>
         <button
           v-if="['queued', 'running'].includes(task.status)"
@@ -92,17 +117,7 @@ const emit = defineEmits<{
     <div v-if="chapterProgress.length" class="chapter-progress-list">
       <div v-for="chapter in chapterProgress" :key="chapter.chapterId" class="chapter-progress-item">
         <span>第 {{ chapter.chapterNumber }} 章 · {{ chapter.title }}</span>
-        <small :class="chapter.status">{{
-          chapter.status === 'completed'
-            ? '已完成'
-            : chapter.status === 'failed'
-              ? '失败，可重试'
-              : chapter.status === 'canceled'
-                ? '已取消'
-                : chapter.status === 'queued'
-                  ? '等待中'
-                  : '生成中'
-        }}</small>
+        <small :class="chapter.status">{{ chapterStatusLabel(task, chapter.status) }}</small>
       </div>
     </div>
     <div v-if="nodeProgress.length" class="chapter-progress-list">
@@ -119,6 +134,34 @@ const emit = defineEmits<{
         }}</small>
       </div>
     </div>
+    <p v-if="task.kind === 'continuity'" class="assistant-hint">
+      这些是模型给出的参考提示；只有正文引文和来源引文都能逐字核对时才标为可核对。任务不会修改正文。
+    </p>
+    <div v-if="task.kind === 'continuity' && continuityFindings.length" class="continuity-finding-list">
+      <article
+        v-for="(item, index) in continuityFindings"
+        :key="`${item.chapterId}:${index}`"
+        class="continuity-finding"
+      >
+        <div class="continuity-finding-head">
+          <strong>第 {{ item.chapterNumber }} 章 · {{ item.title }} · {{ item.category }}</strong>
+          <small :class="item.status === '引文可核对' ? 'completed' : 'queued'">{{ item.status }}</small>
+        </div>
+        <p v-if="item.subject" class="continuity-subject">{{ item.subject }}</p>
+        <p>{{ item.issue }}</p>
+        <small v-if="item.currentQuote">正文引文：{{ item.currentQuote }}</small>
+        <small v-if="item.referenceSource || item.referenceQuote">
+          对照依据{{ item.referenceSource ? `（${item.referenceSource}）` : '' }}：{{ item.referenceQuote || '未提供引文' }}
+        </small>
+        <small>
+          模型把握 {{ item.confidence }} · 正文引文{{ item.currentQuoteVerbatim ? '逐字相符' : '待核实' }} ·
+          依据引文{{ item.referenceQuoteVerbatim ? '逐字相符' : '待核实' }}
+        </small>
+      </article>
+    </div>
+    <p v-else-if="task.kind === 'continuity' && task.status === 'completed'" class="assistant-hint">
+      没有提示出明显的连续性问题；正文未改动。
+    </p>
     <div v-if="task.kind === 'review' && reviewItems.length" class="chapter-progress-list">
       <div v-for="(item, index) in reviewItems" :key="`${index}:${item.event}`" class="chapter-progress-item">
         <span>{{ item.event }} · {{ item.status }}</span>

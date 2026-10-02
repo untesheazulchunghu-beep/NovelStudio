@@ -30,21 +30,22 @@ type Chapter struct {
 }
 
 type Request struct {
-	ID              string
-	NovelID         string
-	WorkflowID      string
-	WorkflowName    string
-	UserID          string
-	Instruction     string
-	Context         string
-	ContextManifest ContextManifest `json:"contextManifest,omitempty"`
-	WritingGuide    string
-	ApprovalMode    string
-	Chapters        []Chapter
-	Nodes           []WorkflowNode
-	NodeResults     []NodeResult
-	Kind            string          `json:"Kind,omitempty"`
-	ReviewOutcomes  []ReviewOutcome `json:"ReviewOutcomes,omitempty"`
+	ID                 string
+	NovelID            string
+	WorkflowID         string
+	WorkflowName       string
+	UserID             string
+	Instruction        string
+	Context            string
+	ContextManifest    ContextManifest `json:"contextManifest,omitempty"`
+	WritingGuide       string
+	ApprovalMode       string
+	Chapters           []Chapter
+	Nodes              []WorkflowNode
+	NodeResults        []NodeResult
+	Kind               string              `json:"Kind,omitempty"`
+	ReviewOutcomes     []ReviewOutcome     `json:"ReviewOutcomes,omitempty"`
+	ContinuityOutcomes []ContinuityOutcome `json:"continuityOutcomes,omitempty"`
 }
 
 type ContextManifest struct {
@@ -265,6 +266,10 @@ func (m *Manager) run(ctx context.Context, request Request) {
 	}
 	if request.Kind == "review" {
 		m.runReviewChecklist(ctx, request)
+		return
+	}
+	if request.Kind == "continuity" {
+		m.runContinuityCheck(ctx, request)
 		return
 	}
 	var previousGenerated Chapter

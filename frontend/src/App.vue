@@ -12,6 +12,8 @@ import {
   type Novel,
   type NovelTask,
   type Proposal,
+  type ProposalMergeInput,
+  type ProposalMergePreview,
   type ProposalSelection,
   type TaskEvent,
   type User,
@@ -26,6 +28,7 @@ import LoginPage from './components/LoginPage.vue'
 import MembersPage from './components/MembersPage.vue'
 import ModelSettingsPage from './components/ModelSettingsPage.vue'
 import ProposalReviewPanel from './components/ProposalReviewPanel.vue'
+import StaleProposalMergeDialog from './components/StaleProposalMergeDialog.vue'
 import TaskMonitorPanel from './components/TaskMonitorPanel.vue'
 import TrashPage from './components/TrashPage.vue'
 import WorkflowPage from './components/WorkflowPage.vue'
@@ -95,6 +98,9 @@ const memberEmail = ref('')
 const memberRole = ref('editor')
 const selectedChapterIds = ref<string[]>([])
 const proposals = ref<Proposal[]>([])
+const proposalMergePreview = ref<ProposalMergePreview | null>(null)
+const mergeLoadingProposalId = ref('')
+const applyingProposalMerge = ref(false)
 const tasks = ref<NovelTask[]>([])
 const activeTask = ref<NovelTask | null>(null)
 const taskProgress = ref(0)
@@ -194,6 +200,7 @@ async function authenticate() {
 
 async function signOut() {
   await api.logout()
+  proposalMergePreview.value = null
   user.value = null
   workspaces.value = []
   novels.value = []
@@ -215,6 +222,7 @@ async function loadNovels() {
 async function openNovel(novel: Novel, nextSection: typeof section.value = 'write') {
   loading.value = true
   try {
+    if (activeNovel.value?.id !== novel.id) proposalMergePreview.value = null
     if (activeNovel.value?.id !== novel.id && hasUnsavedChanges()) cacheDraft()
     window.clearTimeout(draftSaveTimer)
     window.clearTimeout(autoSaveTimer)
@@ -1467,6 +1475,68 @@ async function applyProposal(proposal: Proposal, selection?: ProposalSelection) 
   }
 }
 
+async function openStaleProposalMerge(proposal: Proposal) {
+  if (!activeNovel.value || !canEdit.value) return
+  if (proposal.chapterId === activeChapterId.value && (hasUnsavedChanges() || activeSaveConflict.value)) {
+    notify('请先保存或处理当前章节草稿，再打开三方合并。', true)
+    return
+  }
+  if (activeTask.value && ['queued', 'running'].includes(activeTask.value.status)) {
+    notify('请等待当前任务结束后再打开三方合并。', true)
+    return
+  }
+  const novelId = activeNovel.value.id
+  mergeLoadingProposalId.value = proposal.id
+  try {
+    const preview = await api.proposalMergePreview(novelId, proposal.id)
+    if (mergeLoadingProposalId.value === proposal.id && activeNovel.value?.id === novelId) {
+      proposalMergePreview.value = preview
+    }
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '读取提案版本失败', true)
+  } finally {
+    if (mergeLoadingProposalId.value === proposal.id) mergeLoadingProposalId.value = ''
+  }
+}
+
+function closeProposalMerge() {
+  if (!applyingProposalMerge.value) proposalMergePreview.value = null
+}
+
+async function applyProposalMerge(input: ProposalMergeInput) {
+  if (!activeNovel.value || !proposalMergePreview.value || applyingProposalMerge.value) return
+  if (
+    proposalMergePreview.value.chapterId === activeChapterId.value &&
+    (hasUnsavedChanges() || activeSaveConflict.value)
+  ) {
+    notify('请先保存或处理当前章节草稿，再应用合并稿。', true)
+    return
+  }
+  if (activeTask.value && ['queued', 'running'].includes(activeTask.value.status)) {
+    notify('请等待当前任务结束后再应用合并稿。', true)
+    return
+  }
+  applyingProposalMerge.value = true
+  try {
+    await api.applyProposalMerge(activeNovel.value.id, proposalMergePreview.value.proposalId, input)
+    proposalMergePreview.value = null
+    await refreshNovelData()
+    notify('三方合并稿已保存，提案已处理')
+  } catch (error) {
+    if (error instanceof Error && /更新|版本|过期/.test(error.message)) {
+      proposalMergePreview.value = null
+      try {
+        await refreshNovelData()
+      } catch {
+        /* preserve the original stale-merge message */
+      }
+    }
+    notify(error instanceof Error ? error.message : '保存三方合并稿失败', true)
+  } finally {
+    applyingProposalMerge.value = false
+  }
+}
+
 async function regenerateStaleProposal(proposal: Proposal) {
   if (!activeNovel.value || !canEdit.value) return
   if (hasUnsavedChanges() || activeSaveConflict.value) {
@@ -1718,8 +1788,10 @@ onBeforeUnmount(closeTaskSocket)
             :has-unsaved-changes="hasUnsavedChanges()"
             :saving-chapter="savingChapter"
             :active-task-running="!!activeTask && ['queued', 'running'].includes(activeTask.status)"
+            :merge-loading-proposal-id="mergeLoadingProposalId"
             @apply="applyProposal"
             @apply-selected="applyProposal"
+            @merge="openStaleProposalMerge"
             @reject="rejectProposal"
             @regenerate="regenerateStaleProposal"
           />
@@ -1782,5 +1854,12 @@ onBeforeUnmount(closeTaskSocket)
         <span class="loading-spinner"></span><span>正在整理创作资料…</span>
       </div>
     </main>
+    <StaleProposalMergeDialog
+      v-if="proposalMergePreview"
+      :preview="proposalMergePreview"
+      :busy="applyingProposalMerge"
+      @close="closeProposalMerge"
+      @apply="applyProposalMerge"
+    />
   </div>
 </template>

@@ -34,11 +34,13 @@ const props = defineProps<{
   hasUnsavedChanges: boolean
   savingChapter: boolean
   activeTaskRunning: boolean
+  mergeLoadingProposalId: string
 }>()
 
 const emit = defineEmits<{
   apply: [proposal: Proposal]
   applySelected: [proposal: Proposal, selection: ProposalSelection]
+  merge: [proposal: Proposal]
   reject: [proposal: Proposal]
   regenerate: [proposal: Proposal]
 }>()
@@ -166,6 +168,20 @@ function applySelected(review: (typeof reviews.value)[number]) {
       <p class="proposal-text">{{ review.proposal.text }}</p>
       <div class="proposal-actions">
         <button class="button text-button" :disabled="!canReview" @click="emit('reject', review.proposal)">拒绝</button>
+        <button
+          v-if="review.stale"
+          class="button secondary"
+          :disabled="
+            !canEdit ||
+            savingChapter ||
+            review.localDraftPending ||
+            activeTaskRunning ||
+            mergeLoadingProposalId === review.proposal.id
+          "
+          @click="emit('merge', review.proposal)"
+        >
+          {{ mergeLoadingProposalId === review.proposal.id ? '读取版本…' : '三方比较与合并' }}
+        </button>
         <button
           v-if="review.stale"
           class="button secondary"

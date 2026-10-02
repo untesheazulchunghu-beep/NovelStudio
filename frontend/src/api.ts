@@ -85,6 +85,19 @@ export type Proposal = {
   createdAt: string
 }
 export type ProposalSelection = { selectedHunks: number[]; applyTitle: boolean }
+export type ProposalMergePreview = {
+  proposalId: string
+  chapterId: string
+  baseRevision: number
+  currentRevision: number
+  baseTitle: string
+  baseText: string
+  currentTitle: string
+  currentText: string
+  proposalTitle: string
+  proposalText: string
+}
+export type ProposalMergeInput = { expectedRevision: number; title: string; text: string }
 export type TaskEvent = {
   taskId: string
   sequence: number
@@ -229,6 +242,10 @@ export const api = {
       `/novels/${novelId}/proposals/${proposalId}/apply`,
       json(selection ?? {}),
     ),
+  proposalMergePreview: (novelId: string, proposalId: string) =>
+    request<ProposalMergePreview>(`/novels/${novelId}/proposals/${proposalId}/merge-preview`),
+  applyProposalMerge: (novelId: string, proposalId: string, input: ProposalMergeInput) =>
+    request<{ ok: boolean; revision: number }>(`/novels/${novelId}/proposals/${proposalId}/merge`, json(input)),
   rejectProposal: (novelId: string, proposalId: string) =>
     request<{ ok: boolean }>(`/novels/${novelId}/proposals/${proposalId}/reject`, json({})),
   regenerateStaleProposal: (novelId: string, proposalId: string) =>

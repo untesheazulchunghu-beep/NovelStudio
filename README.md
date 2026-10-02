@@ -23,7 +23,7 @@
 | 模型接入设置 | 首个账户可在 UI 配置本机共享的 OpenAI 兼容 API 地址、密钥、模型与生成参数；测试连接后立即生效，密钥不会由设置接口回显 |
 | 长篇记忆 | 应用提案或自动写入后，为该章保存摘要、出场人物、新增设定与伏笔变化；再次定稿会替换这一章的当前记录。手动编辑或恢复正文版本会将旧记忆标为待刷新，并从后续生成上下文中排除；可在章节编辑器按需刷新。未应用的提案和未确认的演示生成不写入记忆 |
 | 生成任务 | 批量或按工作流生成章节；实时进度、Token 流、取消；逐章状态，失败后可只重试尚未成功的章节；模型临时故障自动重试并提供分类提示。提示词在上下文预算内注入近期章节摘要、蓝图相关的图谱事实和尚未回收的伏笔；详情列出本次注入项和未注入项。结果进入提案审核或自动写入 |
-| 提案审核 | 按段落组对比生成提案，可选择采纳部分修改或整份提案，标题可单独采纳；应用前保留旧版本并校验章节版本；过期提案可基于最新正文按原要求重新生成 |
+| 提案审核 | 按段落组对比生成提案，可选择采纳部分修改或整份提案，标题可单独采纳；应用前保留旧版本并校验章节版本；过期提案可查看基准、当前和提案版本，编辑者可手工整理三方合并稿，也可按原要求重新生成 |
 
 ## 权限矩阵
 
@@ -190,6 +190,7 @@ GitHub Actions 会在 push 和 pull request 上运行相同的后端检查，以
 - `POST /novels/{id}/tasks/batch`、`GET /novels/{id}/tasks`、`GET /tasks/{taskID}`
 - `GET /tasks/{taskID}/events`、`GET /tasks/{taskID}/ws`（WebSocket）、`POST /tasks/{taskID}/cancel|retry`
 - `GET /novels/{id}/proposals`、`POST .../proposals/{proposalID}/apply|reject`（`apply` 空请求体表示应用整份提案；也可传 `{"selectedHunks":[0,2],"applyTitle":true}` 只采纳差异视图中选中的段落组，并可单独选择标题）
+- `GET .../proposals/{proposalID}/merge-preview`、`POST .../proposals/{proposalID}/merge`（读取提案基准版本、当前正文和提案正文；所有者 / 编辑可提交手工整理后的合并稿，并通过 `expectedRevision` 防止预览后的并发覆盖）
 - `POST /novels/{id}/proposals/{proposalID}/regenerate`（基于原任务说明重生成过期提案）
 - `GET /healthz`（含数据库连通性检查）
 

@@ -125,6 +125,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/retry", s.retryTask)
 	mux.HandleFunc("GET /api/v1/novels/{novelID}/proposals", s.listProposals)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/proposals/{proposalID}/apply", s.applyProposal)
+	mux.HandleFunc("GET /api/v1/novels/{novelID}/proposals/{proposalID}/merge-preview", s.getProposalMergePreview)
+	mux.HandleFunc("POST /api/v1/novels/{novelID}/proposals/{proposalID}/merge", s.applyMergedProposal)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/proposals/{proposalID}/reject", s.rejectProposal)
 	mux.HandleFunc("POST /api/v1/novels/{novelID}/proposals/{proposalID}/regenerate", s.regenerateStaleProposal)
 	mux.Handle("/", s.staticHandler())

@@ -101,6 +101,11 @@ var migrations = []migration{
 		name:    "character-states",
 		apply:   migrateCharacterStates,
 	},
+	{
+		version: 6,
+		name:    "model-providers",
+		apply:   migrateModelProviders,
+	},
 }
 
 type columnMigration struct {
@@ -216,6 +221,15 @@ func migrateProposalDemoMode(tx *sql.Tx) error {
 
 func migrateCharacterStates(tx *sql.Tx) error {
 	for _, statement := range characterStateStatements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateModelProviders(tx *sql.Tx) error {
+	for _, statement := range modelProviderStatements {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
@@ -482,7 +496,25 @@ var characterStateStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_character_states_novel_chapter ON character_states(novel_id, chapter_id);`,
 }
 
+var modelProviderStatements = []string{
+	`CREATE TABLE IF NOT EXISTS model_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    api_key_ciphertext TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL,
+    temperature REAL NOT NULL DEFAULT 0.7,
+    max_tokens INTEGER NOT NULL DEFAULT 0,
+    timeout_sec INTEGER NOT NULL DEFAULT 480,
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_providers_default ON model_providers(is_default) WHERE is_default = 1;`,
+}
+
 func init() {
 	schemaStatements = append(schemaStatements, chapterMemoryStatements...)
 	schemaStatements = append(schemaStatements, characterStateStatements...)
+	schemaStatements = append(schemaStatements, modelProviderStatements...)
 }

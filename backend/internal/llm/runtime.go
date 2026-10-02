@@ -51,6 +51,7 @@ type Runtime struct {
 	mu       sync.RWMutex
 	settings RuntimeSettings
 	provider *Provider
+	catalog  *ProviderCatalog
 	envPath  string
 }
 
@@ -65,12 +66,48 @@ func NewRuntime(settings RuntimeSettings, envPath string) *Runtime {
 	}
 }
 
+// NewRuntimeWithCatalog creates a runtime backed by persistent provider
+// profiles. NewRuntime remains available for callers that use the legacy
+// single-provider settings flow.
+func NewRuntimeWithCatalog(catalog *ProviderCatalog, envPath string) *Runtime {
+	if envPath == "" {
+		envPath = ".env"
+	}
+	settings, _ := catalog.Settings("")
+	return &Runtime{
+		settings: settings,
+		provider: newRuntimeProvider(settings),
+		catalog:  catalog,
+		envPath:  envPath,
+	}
+}
+
 func (r *Runtime) Generate(ctx context.Context, prompt string, emit func(string)) (string, error) {
 	text, err, _ := r.GenerateWithMode(ctx, prompt, emit)
 	return text, err
 }
 
 func (r *Runtime) GenerateWithMode(ctx context.Context, prompt string, emit func(string)) (string, error, bool) {
+	return r.GenerateWithModeFor(ctx, "", prompt, emit)
+}
+
+func (r *Runtime) GenerateWithProvider(ctx context.Context, providerID, prompt string, emit func(string)) (string, error) {
+	text, err, _ := r.GenerateWithModeFor(ctx, providerID, prompt, emit)
+	return text, err
+}
+
+func (r *Runtime) GenerateWithModeFor(ctx context.Context, providerID, prompt string, emit func(string)) (string, error, bool) {
+	if r.catalog != nil {
+		provider, settings, exists := r.catalog.Provider(providerID)
+		if !exists {
+			return "", &SettingsValidationError{message: "所选模型服务商不存在"}, true
+		}
+		text, err := provider.Generate(ctx, prompt, emit)
+		return text, err, settings.APIKey == ""
+	}
+	if providerID != "" {
+		return "", &SettingsValidationError{message: "当前生成器不支持所选模型服务商"}, true
+	}
 	r.mu.RLock()
 	provider := r.provider
 	demoMode := r.settings.APIKey == ""
@@ -80,18 +117,70 @@ func (r *Runtime) GenerateWithMode(ctx context.Context, prompt string, emit func
 }
 
 func (r *Runtime) DemoMode() bool {
+	return r.DemoModeFor("")
+}
+
+func (r *Runtime) DemoModeFor(providerID string) bool {
+	if r.catalog != nil {
+		_, settings, exists := r.catalog.Provider(providerID)
+		return !exists || settings.APIKey == ""
+	}
+	if providerID != "" {
+		return true
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.settings.APIKey == ""
 }
 
+func (r *Runtime) ResolveProviderID(providerID string) (string, bool) {
+	if r.catalog != nil {
+		if providerID == "" {
+			providerID = r.catalog.DefaultID()
+		}
+		return providerID, r.catalog.Has(providerID)
+	}
+	return "", providerID == ""
+}
+
+func (r *Runtime) ProviderCatalog() *ProviderCatalog {
+	return r.catalog
+}
+
 func (r *Runtime) Settings() SettingsView {
+	if r.catalog != nil {
+		settings, _ := r.catalog.Settings("")
+		return settingsView(settings)
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return settingsView(r.settings)
 }
 
 func (r *Runtime) Update(input SettingsInput) (SettingsView, error) {
+	if r.catalog != nil {
+		id := r.catalog.DefaultID()
+		var current ProviderProfileView
+		for _, profile := range r.catalog.List() {
+			if profile.ID == id {
+				current = profile
+				break
+			}
+		}
+		settings, ok := r.catalog.Settings(id)
+		if !ok {
+			return SettingsView{}, &SettingsValidationError{message: "默认模型服务商不可用"}
+		}
+		next, err := mergeSettings(settings, input)
+		if err != nil {
+			return SettingsView{}, err
+		}
+		_, err = r.catalog.Save(id, providerProfileInput(current.Name, next))
+		if err != nil {
+			return SettingsView{}, err
+		}
+		return settingsView(next), nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	next, err := mergeSettings(r.settings, input)
@@ -114,6 +203,17 @@ func (r *Runtime) Update(input SettingsInput) (SettingsView, error) {
 }
 
 func (r *Runtime) TestConnection(ctx context.Context, input SettingsInput) error {
+	if r.catalog != nil {
+		return r.catalog.TestConnection(ctx, r.catalog.DefaultID(), ProviderProfileInput{
+			BaseURL:     input.BaseURL,
+			Model:       input.Model,
+			APIKey:      input.APIKey,
+			ClearAPIKey: input.ClearAPIKey,
+			Temperature: input.Temperature,
+			MaxTokens:   input.MaxTokens,
+			TimeoutSec:  input.TimeoutSec,
+		})
+	}
 	r.mu.RLock()
 	next, err := mergeSettings(r.settings, input)
 	r.mu.RUnlock()

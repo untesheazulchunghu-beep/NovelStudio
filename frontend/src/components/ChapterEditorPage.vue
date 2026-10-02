@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Chapter, ChapterRevision, GraphEdge, Novel, NovelTask } from '../api'
+import type { Chapter, ChapterRevision, GraphEdge, ModelProvider, Novel, NovelTask } from '../api'
 import { countManuscriptCharacters } from '../word-count'
 
 const draftTitle = defineModel<string>('draftTitle', { required: true })
@@ -10,6 +10,7 @@ const draftKeyEvents = defineModel<string>('draftKeyEvents', { required: true })
 const draftHook = defineModel<string>('draftHook', { required: true })
 const guideDraft = defineModel<string>('guideDraft', { required: true })
 const runInstruction = defineModel<string>('runInstruction', { required: true })
+const providerId = defineModel<string>('providerId', { required: true })
 const selectedChapterIds = defineModel<string[]>('selectedChapterIds', { required: true })
 const showBlueprint = defineModel<boolean>('showBlueprint', { required: true })
 const showHistory = defineModel<boolean>('showHistory', { required: true })
@@ -33,6 +34,7 @@ defineProps<{
   edges: GraphEdge[]
   entityCount: number
   tasks: NovelTask[]
+  providers: ModelProvider[]
   savingGuide: boolean
   markdownHref: string
   textHref: string
@@ -322,6 +324,14 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               placeholder="例如：续写主角抵达雾港后的场景，保持克制、冷峻的叙述风格……"
             ></textarea>
             <div class="assistant-options">
+              <label>
+                <span>模型服务商</span>
+                <select v-model="providerId">
+                  <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                    {{ provider.name }}{{ provider.isDefault ? '（默认）' : '' }}
+                  </option>
+                </select>
+              </label>
               <label
                 ><span>处理章节</span>
                 <select v-model="selectedChapterIds" multiple size="2">

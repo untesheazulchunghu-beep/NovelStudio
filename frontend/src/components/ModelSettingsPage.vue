@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api, type ModelSettings, type ModelSettingsInput } from '../api'
+import { api, type ModelProvider, type ModelProviderInput } from '../api'
 
-const saved = ref<ModelSettings | null>(null)
+const emit = defineEmits<{ providersUpdated: [] }>()
+const providers = ref<ModelProvider[]>([])
+const defaultProviderId = ref('')
+const selectedProviderId = ref('')
+const saved = ref<ModelProvider | null>(null)
 const canManage = ref(false)
-const form = ref<ModelSettingsInput>({
+const form = ref<ModelProviderInput>({
+  name: '',
   baseUrl: '',
   model: '',
   temperature: 0.7,
@@ -28,26 +33,39 @@ const canTest = computed(
     (!!form.value.apiKey.trim() || (!!saved.value?.apiKeyConfigured && !form.value.clearApiKey)),
 )
 
-function syncForm(settings: ModelSettings) {
-  saved.value = settings
+function syncForm(provider: ModelProvider) {
+  selectedProviderId.value = provider.id
+  saved.value = provider
   form.value = {
-    baseUrl: settings.baseUrl,
-    model: settings.model,
-    temperature: settings.temperature,
-    maxTokens: settings.maxTokens,
-    timeoutSec: settings.timeoutSec,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    model: provider.model,
+    temperature: provider.temperature,
+    maxTokens: provider.maxTokens,
+    timeoutSec: provider.timeoutSec,
     apiKey: '',
     clearApiKey: false,
   }
+}
+
+async function refreshProviders() {
+  const result = await api.modelProviders()
+  providers.value = result.providers
+  defaultProviderId.value = result.defaultProviderId
+  canManage.value = result.canManage
+  emit('providersUpdated')
 }
 
 async function loadSettings() {
   loading.value = true
   error.value = ''
   try {
-    const result = await api.modelSettings()
-    canManage.value = result.canManage
-    syncForm(result.settings)
+    await refreshProviders()
+    const selected = providers.value.find((provider) => provider.id === selectedProviderId.value)
+    const fallback = providers.value.find((provider) => provider.id === defaultProviderId.value) ?? providers.value[0]
+    if (selected) syncForm(selected)
+    else if (fallback) syncForm(fallback)
+    else startNewProvider()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '读取模型设置失败'
   } finally {
@@ -55,13 +73,38 @@ async function loadSettings() {
   }
 }
 
+function startNewProvider() {
+  selectedProviderId.value = ''
+  saved.value = null
+  const base = providers.value.find((provider) => provider.id === defaultProviderId.value)
+  form.value = {
+    name: '',
+    baseUrl: base?.baseUrl ?? 'https://api.openai.com/v1',
+    model: base?.model ?? 'gpt-4o-mini',
+    temperature: base?.temperature ?? 0.7,
+    maxTokens: base?.maxTokens ?? 0,
+    timeoutSec: base?.timeoutSec ?? 480,
+    apiKey: '',
+    clearApiKey: false,
+  }
+  error.value = ''
+  notice.value = ''
+}
+
+function selectProvider(event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  const provider = providers.value.find((item) => item.id === id)
+  if (provider) syncForm(provider)
+}
+
 function onApiKeyInput() {
   form.value.clearApiKey = false
   notice.value = ''
 }
 
-function requestSettings(): ModelSettingsInput {
+function requestSettings(): ModelProviderInput {
   return {
+    name: form.value.name.trim(),
     baseUrl: form.value.baseUrl.trim(),
     model: form.value.model.trim(),
     temperature: Number(form.value.temperature),
@@ -78,8 +121,14 @@ async function saveSettings() {
   error.value = ''
   notice.value = ''
   try {
-    syncForm(await api.updateModelSettings(requestSettings()))
-    notice.value = '设置已保存，新任务将立即使用当前配置。'
+    const input = requestSettings()
+    const result = selectedProviderId.value
+      ? await api.updateModelProvider(selectedProviderId.value, input)
+      : await api.createModelProvider(input)
+    await refreshProviders()
+    const savedProvider = providers.value.find((provider) => provider.id === result.provider.id)
+    if (savedProvider) syncForm(savedProvider)
+    notice.value = '服务商设置已保存，新任务可以选择此配置。'
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '保存模型设置失败'
   } finally {
@@ -93,12 +142,51 @@ async function testConnection() {
   error.value = ''
   notice.value = ''
   try {
-    const result = await api.testModelSettings(requestSettings())
+    const result = await api.testModelProvider(selectedProviderId.value, requestSettings())
     notice.value = result.message || '模型服务连接成功。'
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '连接模型服务失败'
   } finally {
     testing.value = false
+  }
+}
+
+async function setDefault() {
+  if (!canManage.value || !selectedProviderId.value) return
+  saving.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await api.setDefaultModelProvider(selectedProviderId.value)
+    await refreshProviders()
+    const provider = providers.value.find((item) => item.id === selectedProviderId.value)
+    if (provider) syncForm(provider)
+    notice.value = '默认服务商已更新。'
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '更新默认服务商失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function deleteProvider() {
+  if (!canManage.value || !selectedProviderId.value) return
+  if (!window.confirm(`确定删除模型服务商“${saved.value?.name ?? ''}”吗？`)) return
+  saving.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await api.deleteModelProvider(selectedProviderId.value)
+    selectedProviderId.value = ''
+    await refreshProviders()
+    const provider = providers.value.find((item) => item.id === defaultProviderId.value) ?? providers.value[0]
+    if (provider) syncForm(provider)
+    else startNewProvider()
+    notice.value = '服务商已删除。'
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '删除模型服务商失败'
+  } finally {
+    saving.value = false
   }
 }
 
@@ -111,7 +199,7 @@ onMounted(loadSettings)
       <div>
         <div class="eyebrow">LOCAL MODEL CONNECTION</div>
         <h1>让灵感，接上你的模型。</h1>
-        <p>配置一个 OpenAI 兼容接口，之后的生成任务会立即使用新设置。</p>
+        <p>保存多个 OpenAI 兼容服务商，创建任务时可以选择使用哪一组配置。</p>
       </div>
       <span class="model-state" :class="saved?.apiKeyConfigured ? 'is-ready' : 'is-demo'">
         <i></i>{{ saved?.apiKeyConfigured ? '真实模型已配置' : '当前为演示模式' }}
@@ -122,15 +210,28 @@ onMounted(loadSettings)
       <form class="model-form-card" @submit.prevent="saveSettings">
         <div class="model-form-heading">
           <div>
-            <span class="eyebrow">PROVIDER / 01</span>
-            <h2>OpenAI 兼容服务</h2>
+            <span class="eyebrow">MODEL PROVIDERS / {{ providers.length.toString().padStart(2, '0') }}</span>
+            <h2>{{ saved?.name || '新增模型服务商' }}</h2>
           </div>
-          <span class="provider-mark">API</span>
+          <button v-if="canManage" class="text-button" type="button" @click="startNewProvider">＋ 新增服务商</button>
         </div>
 
         <div v-if="loading" class="settings-loading">正在读取本机设置…</div>
         <template v-else>
+          <label class="model-field field-wide">
+            <span>已保存的服务商</span>
+            <select :value="selectedProviderId" @change="selectProvider">
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                {{ provider.name }}{{ provider.id === defaultProviderId ? '（默认）' : '' }}
+              </option>
+              <option v-if="!selectedProviderId" value="" selected>新增服务商</option>
+            </select>
+          </label>
           <div class="model-fields">
+            <label class="model-field field-wide">
+              <span>服务商名称</span>
+              <input v-model="form.name" required maxlength="80" :disabled="!canManage" placeholder="例如：写作主模型" />
+            </label>
             <label class="model-field field-wide">
               <span>API 基础地址</span>
               <input
@@ -166,8 +267,8 @@ onMounted(loadSettings)
                 spellcheck="false"
                 @input="onApiKeyInput"
               />
-              <small v-if="saved?.apiKeyConfigured">密钥只写入本机配置文件，不会从服务器回传。</small>
-              <small v-else>尚未配置密钥时，作品生成使用安全的演示文本。</small>
+              <small v-if="saved?.apiKeyConfigured">密钥会加密后保存在本机数据库中，接口不会回传密钥。</small>
+              <small v-else>尚未配置密钥时，使用此服务商的任务会进入演示模式。</small>
             </label>
             <label v-if="saved?.apiKeyConfigured" class="model-clear-key">
               <input v-model="form.clearApiKey" type="checkbox" :disabled="!canManage" />
@@ -218,8 +319,22 @@ onMounted(loadSettings)
             <p v-if="!canManage" class="model-feedback">只有本机首个注册账户可以修改此共享设置。</p>
             <p v-else-if="error" class="model-feedback is-error" role="alert">{{ error }}</p>
             <p v-else-if="notice" class="model-feedback is-success" role="status">{{ notice }}</p>
-            <p v-else class="model-feedback">设置保存后立即生效，无需重启服务。</p>
+            <p v-else class="model-feedback">配置保存在本机数据库中，新任务启动时会固定使用所选服务商。</p>
             <div class="model-actions">
+              <button
+                v-if="canManage && saved && !saved.isDefault"
+                class="button secondary"
+                type="button"
+                :disabled="saving || testing"
+                @click="setDefault"
+              >设为默认</button>
+              <button
+                v-if="canManage && saved && providers.length > 1"
+                class="button secondary"
+                type="button"
+                :disabled="saving || testing"
+                @click="deleteProvider"
+              >删除</button>
               <button
                 v-if="canManage"
                 class="button secondary"
@@ -230,7 +345,7 @@ onMounted(loadSettings)
                 {{ testing ? '正在测试…' : '测试连接' }}
               </button>
               <button v-if="canManage" class="button primary" type="submit" :disabled="saving || testing">
-                {{ saving ? '正在保存…' : '保存设置' }}
+                {{ saving ? '正在保存…' : saved ? '保存设置' : '新增服务商' }}
               </button>
             </div>
           </div>
@@ -242,7 +357,7 @@ onMounted(loadSettings)
           <span class="eyebrow">LOCAL ONLY</span>
           <div class="local-config-glyph">⌘</div>
           <h2>留在你的设备上</h2>
-          <p>模型设置保存在当前运行目录的 `.env` 文件中，不进入作品数据库。API Key 不会被接口回显。</p>
+          <p>服务商配置保存在本机数据库中，API Key 使用本机加密密钥保护，接口不会回显密钥。</p>
           <div class="local-config-divider"></div>
           <div class="local-config-detail"><span>配置范围</span><strong>本机所有账户与工作区</strong></div>
           <div class="local-config-detail"><span>管理权限</span><strong>首个注册账户</strong></div>

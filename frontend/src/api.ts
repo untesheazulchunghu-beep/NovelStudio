@@ -86,6 +86,20 @@ export type ModelSettingsInput = Omit<ModelSettings, 'apiKeyConfigured'> & {
   clearApiKey: boolean
 }
 export type ModelSettingsResponse = { settings: ModelSettings; canManage: boolean }
+export type ModelProvider = ModelSettings & {
+  id: string
+  name: string
+  isDefault: boolean
+}
+export type ModelProviderInput = Omit<ModelProvider, 'id' | 'apiKeyConfigured' | 'isDefault'> & {
+  apiKey: string
+  clearApiKey: boolean
+}
+export type ModelProviderCatalog = {
+  providers: ModelProvider[]
+  defaultProviderId: string
+  canManage: boolean
+}
 export type NovelTask = { id: string; novelId: string; kind: string; status: string; progress: number; error?: string }
 export type ContinuityFinding = {
   chapterId: string
@@ -178,6 +192,17 @@ export const api = {
   updateModelSettings: (input: ModelSettingsInput) => request<ModelSettings>('/settings/llm', put(input)),
   testModelSettings: (input: ModelSettingsInput) =>
     request<{ ok: boolean; message: string }>('/settings/llm/test', json(input)),
+  modelProviders: () => request<ModelProviderCatalog>('/settings/llm/providers'),
+  createModelProvider: (input: ModelProviderInput) =>
+    request<{ provider: ModelProvider }>('/settings/llm/providers', json(input)),
+  updateModelProvider: (id: string, input: ModelProviderInput) =>
+    request<{ provider: ModelProvider }>(`/settings/llm/providers/${id}`, put(input)),
+  deleteModelProvider: (id: string) =>
+    request<{ ok: boolean; defaultProviderId: string }>(`/settings/llm/providers/${id}`, { method: 'DELETE' }),
+  setDefaultModelProvider: (id: string) =>
+    request<{ ok: boolean; defaultProviderId: string }>(`/settings/llm/providers/${id}/default`, put({})),
+  testModelProvider: (id: string, input: ModelProviderInput) =>
+    request<{ ok: boolean; message: string }>('/settings/llm/providers/test', json({ id, ...input })),
   novels: () => request<{ novels: Novel[] }>('/novels'),
   deletedNovels: () => request<{ novels: Novel[] }>('/novels/trash'),
   deleteNovel: (id: string) => request<{ ok: boolean }>(`/novels/${id}`, { method: 'DELETE' }),
@@ -261,14 +286,14 @@ export const api = {
     request<{ ok: boolean }>(`/novels/${novelId}/workflows/${workflowId}`, put({ name, definition })),
   deleteWorkflow: (novelId: string, workflowId: string) =>
     request<{ ok: boolean }>(`/novels/${novelId}/workflows/${workflowId}`, { method: 'DELETE' }),
-  runWorkflow: (novelId: string, workflowId: string, chapterIds: string[], instruction: string) =>
-    request<NovelTask>(`/novels/${novelId}/workflows/${workflowId}/run`, json({ chapterIds, instruction })),
-  createBatchTask: (novelId: string, chapterIds: string[], instruction: string) =>
-    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction })),
-  createReviewTask: (novelId: string, chapterIds: string[], instruction: string) =>
-    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, kind: 'review' })),
-  createContinuityTask: (novelId: string, chapterIds: string[], instruction: string) =>
-    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, kind: 'continuity' })),
+  runWorkflow: (novelId: string, workflowId: string, chapterIds: string[], instruction: string, providerId = '') =>
+    request<NovelTask>(`/novels/${novelId}/workflows/${workflowId}/run`, json({ chapterIds, instruction, providerId })),
+  createBatchTask: (novelId: string, chapterIds: string[], instruction: string, providerId = '') =>
+    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, providerId })),
+  createReviewTask: (novelId: string, chapterIds: string[], instruction: string, providerId = '') =>
+    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, providerId, kind: 'review' })),
+  createContinuityTask: (novelId: string, chapterIds: string[], instruction: string, providerId = '') =>
+    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, providerId, kind: 'continuity' })),
   tasks: (novelId: string) => request<{ tasks: NovelTask[] }>(`/novels/${novelId}/tasks`),
   task: (taskId: string) => request<NovelTask>(`/tasks/${taskId}`),
   cancelTask: (taskId: string) => request<{ ok: boolean }>(`/tasks/${taskId}/cancel`, json({})),

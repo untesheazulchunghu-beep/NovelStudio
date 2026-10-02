@@ -21,6 +21,7 @@ type generationInput struct {
 	ChapterIDs  []string            `json:"chapterIds"`
 	Instruction string              `json:"instruction"`
 	Kind        string              `json:"kind"`
+	ProviderID  string              `json:"providerId,omitempty"`
 	Nodes       []task.WorkflowNode `json:"-"`
 }
 
@@ -47,17 +48,23 @@ func (s *Server) createBatchTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	providerID, exists := s.tasks.ResolveProviderID(input.ProviderID)
+	if !exists {
+		writeError(w, http.StatusBadRequest, "INVALID_MODEL_PROVIDER", "所选模型服务商不存在")
+		return
+	}
+	input.ProviderID = providerID
 	kind := "batch"
 	switch strings.TrimSpace(input.Kind) {
 	case "", "batch":
 	case "review":
-		if s.tasks.DemoMode() {
+		if s.tasks.DemoModeFor(input.ProviderID) {
 			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再生成关键事件审稿清单")
 			return
 		}
 		kind = "review"
 	case "continuity":
-		if s.tasks.DemoMode() {
+		if s.tasks.DemoModeFor(input.ProviderID) {
 			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再启动连续性检查")
 			return
 		}
@@ -173,6 +180,11 @@ type apiFailure struct {
 }
 
 func (s *Server) startGeneration(ctx context.Context, novelID, userID string, input generationInput, kind, workflowID, workflowName string) (task.Task, *apiFailure) {
+	providerID, exists := s.tasks.ResolveProviderID(input.ProviderID)
+	if !exists {
+		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_MODEL_PROVIDER", message: "所选模型服务商不存在"}
+	}
+	input.ProviderID = providerID
 	if len(input.ChapterIDs) == 0 || len(input.ChapterIDs) > 20 || len(strings.TrimSpace(input.Instruction)) == 0 || len([]rune(input.Instruction)) > 5000 {
 		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_TASK", message: "请选择 1–20 个章节，并填写不超过 5000 字的任务说明"}
 	}
@@ -338,7 +350,7 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 	taskID := database.NewID()
 	now := database.Now()
 	request := task.Request{
-		ID: taskID, NovelID: novelID, WorkflowID: workflowID, WorkflowName: workflowName, UserID: userID,
+		ID: taskID, NovelID: novelID, ProviderID: input.ProviderID, WorkflowID: workflowID, WorkflowName: workflowName, UserID: userID,
 		Instruction: strings.TrimSpace(input.Instruction), Context: knowledge,
 		ContextManifest: task.ContextManifest{
 			Sources: contextSources, Dropped: dropped, TruncatedEntities: truncatedEntities, TruncatedRelations: truncatedRelations,
@@ -418,17 +430,23 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "TASK_ALREADY_RETRIED", "该任务已经创建过重试任务")
 		return
 	}
-	if (kind == "review" || kind == "continuity") && s.tasks.DemoMode() {
+	var request task.Request
+	if requestJSON == "" || json.Unmarshal([]byte(requestJSON), &request) != nil {
+		writeError(w, http.StatusConflict, "TASK_REQUEST_UNAVAILABLE", "该任务缺少可恢复的请求快照，请重新发起生成")
+		return
+	}
+	providerID, providerExists := s.tasks.ResolveProviderID(request.ProviderID)
+	if !providerExists {
+		writeError(w, http.StatusConflict, "MODEL_PROVIDER_UNAVAILABLE", "原任务使用的模型服务商已被删除")
+		return
+	}
+	request.ProviderID = providerID
+	if (kind == "review" || kind == "continuity") && s.tasks.DemoModeFor(request.ProviderID) {
 		message := "请先配置真实模型，再重试关键事件审稿"
 		if kind == "continuity" {
 			message = "请先配置真实模型，再重试连续性检查"
 		}
 		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", message)
-		return
-	}
-	var request task.Request
-	if requestJSON == "" || json.Unmarshal([]byte(requestJSON), &request) != nil {
-		writeError(w, http.StatusConflict, "TASK_REQUEST_UNAVAILABLE", "该任务缺少可恢复的请求快照，请重新发起生成")
 		return
 	}
 	reviewed := make(map[string]bool, len(request.ReviewOutcomes)+len(request.ContinuityOutcomes))
@@ -735,7 +753,7 @@ func (s *Server) regenerateStaleProposal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	item, failure := s.startGeneration(r.Context(), novelID, userID, generationInput{
-		ChapterIDs: []string{chapterID}, Instruction: original.Instruction, Nodes: original.Nodes,
+		ChapterIDs: []string{chapterID}, Instruction: original.Instruction, ProviderID: original.ProviderID, Nodes: original.Nodes,
 	}, originalKind, "", original.WorkflowName)
 	if failure != nil {
 		writeError(w, failure.status, failure.code, failure.message)

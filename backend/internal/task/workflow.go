@@ -109,7 +109,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 	}
 	returns := 0
 	lastText := ""
-	lastDemo := m.demoMode()
+	lastDemo := m.demoModeFor(request.ProviderID)
 	stored := false
 	for index := 0; index < len(request.Nodes); {
 		if err := ctx.Err(); err != nil {
@@ -138,7 +138,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			reviewNote := laterReviewOutput(request.Nodes, index, outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, reviewNote)
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, err, demo := m.generate(ctx, prompt, tokenBatch.add)
+			text, err, demo := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 			tokenBatch.flush()
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
@@ -164,7 +164,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			upstream := upstreamText(request.Nodes[:index], outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, "")
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, err, _ := m.generate(ctx, prompt, tokenBatch.add)
+			text, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 			tokenBatch.flush()
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
@@ -296,7 +296,7 @@ func (m *Manager) persistChapterOutput(ctx context.Context, request Request, cha
 	var chapterMemory ChapterMemory
 	memoryAvailable := false
 	if applyAutomatically {
-		rawMemory, memoryErr, memoryDemo := m.generate(ctx, MemoryPrompt(chapter, text), func(string) {})
+		rawMemory, memoryErr, memoryDemo := m.generate(ctx, request.ProviderID, MemoryPrompt(chapter, text), func(string) {})
 		if memoryErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return "", false, ctxErr

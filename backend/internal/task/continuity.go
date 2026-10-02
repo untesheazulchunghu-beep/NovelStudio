@@ -190,7 +190,7 @@ func (m *Manager) runContinuityCheck(ctx context.Context, request Request) {
 		m.emit(request.ID, "chapter.started", map[string]any{"chapterId": chapter.ID, "chapterNumber": chapter.Number, "title": chapter.Title})
 		prompt := buildContinuityPrompt(request, chapter)
 		tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-		text, err, _ := m.generate(ctx, prompt, tokenBatch.add)
+		text, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 		tokenBatch.flush()
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {

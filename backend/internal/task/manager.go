@@ -32,6 +32,7 @@ type Chapter struct {
 type Request struct {
 	ID                 string
 	NovelID            string
+	ProviderID         string `json:"providerId,omitempty"`
 	WorkflowID         string
 	WorkflowName       string
 	UserID             string
@@ -251,7 +252,7 @@ func (m *Manager) run(ctx context.Context, request Request) {
 	m.emit(request.ID, "task.started", map[string]any{
 		"chapterCount":       len(request.Chapters),
 		"workflowName":       request.WorkflowName,
-		"demoMode":           m.demoMode(),
+		"demoMode":           m.demoModeFor(request.ProviderID),
 		"contextSources":     request.ContextManifest.Sources,
 		"droppedContext":     request.ContextManifest.Dropped,
 		"truncatedEntities":  request.ContextManifest.TruncatedEntities,
@@ -296,7 +297,7 @@ func (m *Manager) run(ctx context.Context, request Request) {
 		}
 		prompt := buildPrompt(request, promptChapter)
 		tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-		text, err, demoMode := m.generate(ctx, prompt, func(delta string) {
+		text, err, demoMode := m.generate(ctx, request.ProviderID, prompt, func(delta string) {
 			tokenBatch.add(delta)
 		})
 		tokenBatch.flush()
@@ -347,7 +348,7 @@ func (m *Manager) run(ctx context.Context, request Request) {
 
 // ComposeChapterMemory asks the injected generator for the four memory fields.
 func (m *Manager) ComposeChapterMemory(ctx context.Context, chapter Chapter, body string) (ChapterMemory, error) {
-	raw, err, demoMode := m.generate(ctx, MemoryPrompt(chapter, body), func(string) {})
+	raw, err, demoMode := m.generate(ctx, "", MemoryPrompt(chapter, body), func(string) {})
 	if err != nil {
 		return ChapterMemory{}, err
 	}
@@ -364,17 +365,53 @@ func (m *Manager) DemoMode() bool {
 	return m.demoMode()
 }
 
+func (m *Manager) DemoModeFor(providerID string) bool {
+	return m.demoModeFor(providerID)
+}
+
+func (m *Manager) ResolveProviderID(providerID string) (string, bool) {
+	resolver, ok := m.generator.(interface {
+		ResolveProviderID(string) (string, bool)
+	})
+	if !ok {
+		return "", providerID == ""
+	}
+	return resolver.ResolveProviderID(providerID)
+}
+
 func (m *Manager) demoMode() bool {
+	return m.demoModeFor("")
+}
+
+func (m *Manager) demoModeFor(providerID string) bool {
+	if generator, ok := m.generator.(interface{ DemoModeFor(string) bool }); ok {
+		return generator.DemoModeFor(providerID)
+	}
+	if providerID != "" {
+		return true
+	}
 	generator, ok := m.generator.(interface{ DemoMode() bool })
 	return ok && generator.DemoMode()
 }
 
-func (m *Manager) generate(ctx context.Context, prompt string, emit func(string)) (string, error, bool) {
+func (m *Manager) generate(ctx context.Context, providerID, prompt string, emit func(string)) (string, error, bool) {
+	generatorWithProvider, hasProvider := m.generator.(interface {
+		GenerateWithModeFor(context.Context, string, string, func(string)) (string, error, bool)
+	})
+	if hasProvider {
+		return generatorWithProvider.GenerateWithModeFor(ctx, providerID, prompt, emit)
+	}
 	generator, ok := m.generator.(interface {
 		GenerateWithMode(context.Context, string, func(string)) (string, error, bool)
 	})
 	if ok {
+		if providerID != "" {
+			return "", errors.New("selected model provider is unavailable"), true
+		}
 		return generator.GenerateWithMode(ctx, prompt, emit)
+	}
+	if providerID != "" {
+		return "", errors.New("selected model provider is unavailable"), true
 	}
 	demoMode := m.demoMode()
 	text, err := m.generator.Generate(ctx, prompt, emit)

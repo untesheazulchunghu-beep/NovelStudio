@@ -28,14 +28,21 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	modelRuntime := llm.NewRuntime(llm.RuntimeSettings{
+	providerCatalog, err := llm.NewProviderCatalog(db, settings.LLMEncryptionKey, settings.LLMEncryptionKeyNew, ".env", llm.RuntimeSettings{
 		BaseURL:     settings.LLMBaseURL,
 		APIKey:      settings.LLMAPIKey,
 		Model:       settings.LLMModel,
 		Temperature: settings.LLMTemperature,
 		MaxTokens:   settings.LLMMaxTokens,
 		TimeoutSec:  settings.LLMTimeoutSec,
-	}, ".env")
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := config.ClearLegacyLLMAPIKey(".env"); err != nil {
+		log.Fatal(err)
+	}
+	modelRuntime := llm.NewRuntimeWithCatalog(providerCatalog, ".env")
 	manager, err := task.NewManager(db, modelRuntime)
 	if err != nil {
 		log.Fatal(err)

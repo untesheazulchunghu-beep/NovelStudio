@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -12,19 +13,21 @@ import (
 )
 
 type Config struct {
-	Addr               string
-	DatabasePath       string
-	SessionSecret      []byte
-	SessionSecure      bool
-	AllowedOrigins     []string
-	StaticDir          string
-	LLMBaseURL         string
-	LLMAPIKey          string
-	LLMModel           string
-	LLMTemperature     float64
-	LLMMaxTokens       int
-	LLMTimeoutSec      int
-	ContextBudgetRunes int
+	Addr                string
+	DatabasePath        string
+	SessionSecret       []byte
+	SessionSecure       bool
+	AllowedOrigins      []string
+	StaticDir           string
+	LLMBaseURL          string
+	LLMAPIKey           string
+	LLMEncryptionKey    []byte
+	LLMEncryptionKeyNew bool
+	LLMModel            string
+	LLMTemperature      float64
+	LLMMaxTokens        int
+	LLMTimeoutSec       int
+	ContextBudgetRunes  int
 }
 
 type LLMValues struct {
@@ -55,6 +58,25 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("persist process session secret: %w", err)
 		}
 	}
+	encryptionKeyText := strings.TrimSpace(os.Getenv("LLM_ENCRYPTION_KEY"))
+	encryptionKeyIsNew := encryptionKeyText == ""
+	var encryptionKey []byte
+	if encryptionKeyIsNew {
+		encryptionKey = make([]byte, 32)
+		if _, err := rand.Read(encryptionKey); err != nil {
+			return Config{}, fmt.Errorf("generate model encryption key: %w", err)
+		}
+		encryptionKeyText = base64.RawURLEncoding.EncodeToString(encryptionKey)
+		if err := os.Setenv("LLM_ENCRYPTION_KEY", encryptionKeyText); err != nil {
+			return Config{}, fmt.Errorf("set model encryption key: %w", err)
+		}
+	} else {
+		var err error
+		encryptionKey, err = base64.RawURLEncoding.DecodeString(encryptionKeyText)
+		if err != nil || len(encryptionKey) != 32 {
+			return Config{}, fmt.Errorf("LLM_ENCRYPTION_KEY must be a base64url-encoded 32-byte key")
+		}
+	}
 
 	origins := strings.Split(env("ALLOWED_ORIGINS", "localhost:5173,127.0.0.1:5173"), ",")
 	for i := range origins {
@@ -80,19 +102,21 @@ func Load() (Config, error) {
 		}
 	}
 	return Config{
-		Addr:               env("APP_ADDR", "127.0.0.1:8080"),
-		DatabasePath:       env("DB_PATH", "data/novel-studio.db"),
-		SessionSecret:      []byte(secret),
-		SessionSecure:      os.Getenv("SESSION_SECURE") == "true" || production,
-		AllowedOrigins:     origins,
-		StaticDir:          env("STATIC_DIR", "frontend/dist"),
-		LLMBaseURL:         env("LLM_BASE_URL", "https://api.openai.com/v1"),
-		LLMAPIKey:          strings.TrimSpace(os.Getenv("LLM_API_KEY")),
-		LLMModel:           env("LLM_MODEL", "gpt-4o-mini"),
-		LLMTemperature:     temperature,
-		LLMMaxTokens:       maxTokens,
-		LLMTimeoutSec:      timeout,
-		ContextBudgetRunes: positiveIntEnv("CONTEXT_BUDGET_RUNES", defaultContextBudgetRunes),
+		Addr:                env("APP_ADDR", "127.0.0.1:8080"),
+		DatabasePath:        env("DB_PATH", "data/novel-studio.db"),
+		SessionSecret:       []byte(secret),
+		SessionSecure:       os.Getenv("SESSION_SECURE") == "true" || production,
+		AllowedOrigins:      origins,
+		StaticDir:           env("STATIC_DIR", "frontend/dist"),
+		LLMBaseURL:          env("LLM_BASE_URL", "https://api.openai.com/v1"),
+		LLMAPIKey:           strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		LLMEncryptionKey:    encryptionKey,
+		LLMEncryptionKeyNew: encryptionKeyIsNew,
+		LLMModel:            env("LLM_MODEL", "gpt-4o-mini"),
+		LLMTemperature:      temperature,
+		LLMMaxTokens:        maxTokens,
+		LLMTimeoutSec:       timeout,
+		ContextBudgetRunes:  positiveIntEnv("CONTEXT_BUDGET_RUNES", defaultContextBudgetRunes),
 	}, nil
 }
 
@@ -203,6 +227,135 @@ func SaveLLMValues(path string, values LLMValues) error {
 		if err := os.Setenv(update.key, update.value); err != nil {
 			return fmt.Errorf("apply %s to running process: %w", update.key, err)
 		}
+	}
+	return nil
+}
+
+// SaveLLMEncryptionKey persists the generated data-encryption key before an
+// API key is written to the database, so encrypted provider settings survive
+// process restarts.
+func SaveLLMEncryptionKey(path string, key []byte) error {
+	if len(key) != 32 {
+		return fmt.Errorf("model encryption key must be 32 bytes")
+	}
+	value := base64.RawURLEncoding.EncodeToString(key)
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return fmt.Errorf("model encryption key contains an unsupported line break")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read local environment file: %w", err)
+	}
+	lines := make([]string, 0)
+	if len(contents) > 0 {
+		lines = strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
+	}
+	updated := false
+	hasSessionSecret := false
+	for index, line := range lines {
+		keyName, _, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export ")), "=")
+		if !ok {
+			continue
+		}
+		keyName = strings.TrimSpace(keyName)
+		if keyName == "SESSION_SECRET" {
+			hasSessionSecret = true
+		}
+		if keyName == "LLM_ENCRYPTION_KEY" {
+			lines[index] = "LLM_ENCRYPTION_KEY=" + strconv.Quote(value)
+			updated = true
+		}
+	}
+	if !updated {
+		lines = append(lines, "LLM_ENCRYPTION_KEY="+strconv.Quote(value))
+	}
+	if !hasSessionSecret {
+		if sessionSecret := os.Getenv("SESSION_SECRET"); sessionSecret != "" {
+			lines = append(lines, "SESSION_SECRET="+strconv.Quote(sessionSecret))
+		}
+	}
+	output := strings.Join(lines, "\n") + "\n"
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".novel-studio-env-*")
+	if err != nil {
+		return fmt.Errorf("create local environment update: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("protect local environment file: %w", err)
+	}
+	if _, err := temporary.WriteString(output); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write local environment update: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("flush local environment update: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close local environment update: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace local environment file: %w", err)
+	}
+	if err := os.Setenv("LLM_ENCRYPTION_KEY", value); err != nil {
+		return fmt.Errorf("apply model encryption key to running process: %w", err)
+	}
+	return nil
+}
+
+// ClearLegacyLLMAPIKey removes the plaintext credential used by the previous
+// single-provider configuration after it has been imported into the encrypted
+// provider catalog.
+func ClearLegacyLLMAPIKey(path string) error {
+	contents, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read local environment file: %w", err)
+	}
+	if err == nil {
+		lines := strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
+		kept := make([]string, 0, len(lines))
+		removed := false
+		for _, line := range lines {
+			key, _, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export ")), "=")
+			if ok && strings.TrimSpace(key) == "LLM_API_KEY" {
+				removed = true
+				continue
+			}
+			kept = append(kept, line)
+		}
+		if removed {
+			directory := filepath.Dir(path)
+			temporary, err := os.CreateTemp(directory, ".novel-studio-env-*")
+			if err != nil {
+				return fmt.Errorf("create local environment update: %w", err)
+			}
+			temporaryPath := temporary.Name()
+			defer os.Remove(temporaryPath)
+			if err := temporary.Chmod(0o600); err != nil {
+				temporary.Close()
+				return fmt.Errorf("protect local environment file: %w", err)
+			}
+			if _, err := temporary.WriteString(strings.Join(kept, "\n") + "\n"); err != nil {
+				temporary.Close()
+				return fmt.Errorf("write local environment update: %w", err)
+			}
+			if err := temporary.Sync(); err != nil {
+				temporary.Close()
+				return fmt.Errorf("flush local environment update: %w", err)
+			}
+			if err := temporary.Close(); err != nil {
+				return fmt.Errorf("close local environment update: %w", err)
+			}
+			if err := os.Rename(temporaryPath, path); err != nil {
+				return fmt.Errorf("replace local environment file: %w", err)
+			}
+		}
+	}
+	if err := os.Unsetenv("LLM_API_KEY"); err != nil {
+		return fmt.Errorf("remove legacy model credential from process environment: %w", err)
 	}
 	return nil
 }

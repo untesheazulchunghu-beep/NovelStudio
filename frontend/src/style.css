@@ -788,7 +788,8 @@ select {
 .model-field > span {
   color: #54645a;
 }
-.model-field input {
+.model-field input,
+.model-field select {
   width: 100%;
   min-width: 0;
   height: 42px;
@@ -803,7 +804,8 @@ select {
     border-color 0.18s,
     box-shadow 0.18s;
 }
-.model-field input:focus {
+.model-field input:focus,
+.model-field select:focus {
   border-color: #679c7b;
   box-shadow: 0 0 0 3px #4b8a6612;
 }

@@ -12,6 +12,7 @@ import {
   type GraphEdge,
   type GraphNode,
   type Member,
+  type ModelProvider,
   type Novel,
   type NovelTask,
   type Proposal,
@@ -101,6 +102,9 @@ const editingCharacterStateId = ref('')
 const edgeForm = ref({ sourceId: '', targetId: '', relation: '', summary: '' })
 const editingEdgeId = ref('')
 const workflows = ref<Workflow[]>([])
+const modelProviders = ref<ModelProvider[]>([])
+const defaultProviderId = ref('')
+const selectedProviderId = ref('')
 const activeWorkflowId = ref('')
 const workflowName = ref('')
 const workflowDefinition = ref<WorkflowDefinition>({ nodes: [], edges: [] })
@@ -191,9 +195,29 @@ async function loadSession() {
     const result = await api.me()
     user.value = result.user
     workspaces.value = result.workspaces
+    await loadModelProviders()
     await loadNovels()
   } catch {
     user.value = null
+  }
+}
+
+async function loadModelProviders() {
+  try {
+    const result = await api.modelProviders()
+    const previousDefaultProviderId = defaultProviderId.value
+    modelProviders.value = result.providers
+    defaultProviderId.value = result.defaultProviderId
+    if (
+      !modelProviders.value.some((provider) => provider.id === selectedProviderId.value) ||
+      selectedProviderId.value === previousDefaultProviderId
+    ) {
+      selectedProviderId.value = result.defaultProviderId
+    }
+  } catch {
+    modelProviders.value = []
+    defaultProviderId.value = ''
+    selectedProviderId.value = ''
   }
 }
 
@@ -217,6 +241,9 @@ async function signOut() {
   proposalMergePreview.value = null
   user.value = null
   workspaces.value = []
+  modelProviders.value = []
+  defaultProviderId.value = ''
+  selectedProviderId.value = ''
   novels.value = []
   deletedNovels.value = []
   activeNovel.value = null
@@ -1307,7 +1334,7 @@ async function startBatch() {
     return
   }
   try {
-    const task = await api.createBatchTask(activeNovel.value.id, ids, runInstruction.value.trim())
+    const task = await api.createBatchTask(activeNovel.value.id, ids, runInstruction.value.trim(), selectedProviderId.value)
     await startTask(task)
   } catch (error) {
     notify(error instanceof Error ? error.message : '创建任务失败', true)
@@ -1326,7 +1353,7 @@ async function startReview() {
     return
   }
   try {
-    const task = await api.createReviewTask(activeNovel.value.id, ids, runInstruction.value.trim())
+    const task = await api.createReviewTask(activeNovel.value.id, ids, runInstruction.value.trim(), selectedProviderId.value)
     await startTask(task)
   } catch (error) {
     notify(error instanceof Error ? error.message : '创建审稿任务失败', true)
@@ -1361,6 +1388,7 @@ async function startContinuityCheck() {
       activeNovel.value.id,
       ids,
       runInstruction.value.trim() || '检查人物状态、时间线与设定冲突。',
+      selectedProviderId.value,
     )
     await startTask(task)
   } catch (error) {
@@ -1388,6 +1416,7 @@ async function runWorkflow() {
       workflowID,
       ids,
       runInstruction.value.trim() || '根据工作流完成章节创作并生成修改提案。',
+      selectedProviderId.value,
     )
     await startTask(task)
   } catch (error) {
@@ -1899,7 +1928,7 @@ onBeforeUnmount(closeTaskSocket)
         :can-manage-novel="canManageNovel"
         @restore="restoreNovel"
       />
-      <ModelSettingsPage v-else-if="section === 'settings'" />
+      <ModelSettingsPage v-else-if="section === 'settings'" @providers-updated="loadModelProviders" />
       <ChapterEditorPage
         v-else-if="section === 'write' && activeNovel"
         v-model:draft-title="draftTitle"
@@ -1909,6 +1938,7 @@ onBeforeUnmount(closeTaskSocket)
         v-model:draft-hook="draftHook"
         v-model:guide-draft="guideDraft"
         v-model:run-instruction="runInstruction"
+        v-model:provider-id="selectedProviderId"
         v-model:selected-chapter-ids="selectedChapterIds"
         v-model:show-blueprint="showBlueprint"
         v-model:show-history="showHistory"
@@ -1930,6 +1960,7 @@ onBeforeUnmount(closeTaskSocket)
         :edges="edges"
         :entity-count="stats.entities"
         :tasks="tasks"
+        :providers="modelProviders"
         :saving-guide="savingGuide"
         :markdown-href="api.exportNovel(activeNovel.id, 'md')"
         :text-href="api.exportNovel(activeNovel.id, 'txt')"
@@ -2026,11 +2057,13 @@ onBeforeUnmount(closeTaskSocket)
         v-model:workflow-definition="workflowDefinition"
         v-model:workflow-chapter-ids="workflowChapterIds"
         v-model:run-instruction="runInstruction"
+        v-model:provider-id="selectedProviderId"
         :workflows="workflows"
         :active-workflow-id="activeWorkflowId"
         :chapters="chapters"
         :can-edit="canEdit"
         :tasks="tasks"
+        :providers="modelProviders"
         @select="selectWorkflowById"
         @create="createWorkflow"
         @create-template="createWorkflowTemplate"

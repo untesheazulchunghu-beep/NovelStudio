@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { Chapter, NovelTask, Workflow, WorkflowDefinition, WorkflowNode } from '../api'
+import type { Chapter, ModelProvider, NovelTask, Workflow, WorkflowDefinition, WorkflowNode } from '../api'
 import { acceptWorkflowEdge, workflowEdgePath } from '../workflow-connection'
 
 const workflowName = defineModel<string>('workflowName', { required: true })
 const workflowDefinition = defineModel<WorkflowDefinition>('workflowDefinition', { required: true })
 const workflowChapterIds = defineModel<string[]>('workflowChapterIds', { required: true })
 const runInstruction = defineModel<string>('runInstruction', { required: true })
+const providerId = defineModel<string>('providerId', { required: true })
 
 const props = defineProps<{
   workflows: Workflow[]
@@ -14,6 +15,7 @@ const props = defineProps<{
   chapters: Chapter[]
   canEdit: boolean
   tasks: NovelTask[]
+  providers: ModelProvider[]
 }>()
 
 const emit = defineEmits<{
@@ -217,6 +219,14 @@ function removeWorkflowNode(id: string) {
           </label>
           <label
             >额外创作要求<textarea v-model="runInstruction" rows="3" placeholder="可选：本次任务的特别要求"></textarea>
+          </label>
+          <label
+            >模型服务商
+            <select v-model="providerId">
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                {{ provider.name }}{{ provider.isDefault ? '（默认）' : '' }}
+              </option>
+            </select>
           </label>
           <button class="button primary wide" :disabled="!canEdit || !chapters.length" @click="emit('run')">
             运行工作流 <span>↗</span>

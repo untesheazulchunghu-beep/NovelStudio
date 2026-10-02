@@ -196,7 +196,7 @@ func (m *Manager) runReviewChecklist(ctx context.Context, request Request) {
 		}
 		prompt := buildReviewPrompt(request, chapter, events)
 		tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-		text, err, _ := m.generate(ctx, prompt, tokenBatch.add)
+		text, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
 		tokenBatch.flush()
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {

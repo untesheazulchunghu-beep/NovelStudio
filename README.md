@@ -79,8 +79,8 @@ go run ./cmd/server
 ```
 
 后端会读取当前工作目录的 `.env`；已有系统环境变量优先。服务默认只监听本机 `127.0.0.1:8080`，
-数据写入 `data/novel-studio.db`。未配置 `LLM_API_KEY` 时，生成任务会
-返回演示文本，方便先跑通流程。旧版本的数据库会在启动时自动补齐新增字段（如 `writing_guide`、
+数据写入 `data/novel-studio.db`。未配置任一模型服务商的 API Key 时，生成任务会
+返回演示文本，方便先跑通流程。旧版 `LLM_*` 配置会在首次启动时导入为默认服务商。旧版本的数据库会在启动时自动补齐新增字段（如 `writing_guide`、
 `goal`）和章节记忆表，无需手动迁移。
 
 数据库结构按 `schema_migrations` 版本逐次升级。检测到已有数据库需要升级时，服务会先用 SQLite
@@ -110,7 +110,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 ```
 
 打开 http://127.0.0.1:8080 即可使用。运行目录默认为 `release/`，可通过 `-OutputDirectory` 指定其他位置；
-请将目录放在当前用户有写入权限的位置。注册首个账户后，进入侧栏「API 设置」，填写兼容接口地址、模型和 API Key，先测试连接再保存；此后新生成任务即时使用新配置。生成目录内的
+请将目录放在当前用户有写入权限的位置。注册首个账户后，进入侧栏「API 设置」，添加兼容接口地址、模型和 API Key，先测试连接再保存；创作页和工作流页都可以为任务选择服务商。生成目录内的
 `Start-NovelStudio.ps1` 可独立启动或随整个目录搬移，数据库路径相对于该目录解析。
 
 本机冒烟脚本会使用临时数据库验证健康检查、SPA 路由 / 前端资源及登录后的模型设置接口，结束后清理测试数据：
@@ -131,7 +131,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | 允许的跨域来源主机（逗号分隔），同时用于 WebSocket Origin 校验 |
 | `STATIC_DIR` | `frontend/dist` | 前端构建产物目录；开发源码目录下也会回退查找 `../frontend/dist` |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
-| `LLM_API_KEY` | 空 | 模型密钥；为空时进入演示模式 |
+| `LLM_API_KEY` | 空 | 仅用于把旧版单 Provider 配置导入默认服务商；新配置通过「API 设置」维护 |
+| `LLM_ENCRYPTION_KEY` | 首次保存密钥时生成 | SQLite 中 Provider API Key 的 base64url 编码 32 字节加密密钥；可由部署环境显式提供 |
 | `LLM_MODEL` | `gpt-4o-mini` | 模型名称 |
 | `LLM_TEMPERATURE` | `0.7` | 生成随机度，范围 0–2 |
 | `LLM_MAX_TOKENS` | `0` | 单次最大输出 token，`0` 表示交由模型默认值 |
@@ -139,8 +140,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `CONTEXT_BUDGET_RUNES` | `12000` | 生成时注入上下文的字数预算，按近期摘要、相关图谱、未回收伏笔三份均分，某一部分超长不会占掉其他部分的额度 |
 
 完整示例见 [`backend/.env.example`](backend/.env.example)。
-上述模型参数也可在登录后的「API 设置」页面修改；修改会写入当前运行目录的 `.env`，并立即用于新任务，不需要重启。
-这是一组本机全局配置，所有账户和工作区共用；为避免协作者意外替换 API Key，只有本机首个注册账户可以修改和测试连接。
+旧版模型参数用于首次导入默认服务商。之后的 Provider 配置写入 SQLite；只有本机首个注册账户可以新增、修改、删除、设为默认或测试连接，其他账户仍可在创作任务中选择已配置的 Provider。
 
 ## 安全说明
 
@@ -152,7 +152,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
   `Permissions-Policy` 等安全头；SPA 页面额外附带 CSP。
 - 请求体限制为 2 MB，且拒绝未知字段与多段 JSON。
 - 跨域采用显式白名单（`ALLOWED_ORIGINS`），仅回显匹配的来源，不会使用通配符。
-- 模型 API Key 保存在本机 `.env` 文件中（明文）；设置读取接口只返回是否已配置，不返回密钥。仅本机首个注册账户可通过 UI 修改模型配置；请限制运行目录的文件访问权限，并不要把 `.env` 分享或提交到版本库。
+- 模型 API Key 使用 AES-GCM 加密后保存在 SQLite；`LLM_ENCRYPTION_KEY` 保存在本机 `.env`（或由部署环境提供），服务会在首次保存非空 API Key 前写入新生成的密钥。设置接口只返回是否已配置，不返回密钥。备份或搬移数据库时必须同时保留相同的加密密钥；丢失密钥后无法恢复已保存的 API Key。
+- 模型 Provider 配置为本机全局配置，所有账户和工作区共用；仅本机首个注册账户可管理和测试 Provider，其他账户只能选择已配置的 Provider。
 
 ## 测试与验证
 
@@ -188,8 +189,9 @@ GitHub Actions 会在 push 和 pull request 上运行相同的后端检查，以
 - `GET /novels/{id}/chapters/{chapterID}/revisions`、`POST .../revisions/{revision}/restore`
 - `GET /novels/{id}/graph`、`POST /novels/{id}/graph/nodes`、`PUT|DELETE /novels/{id}/graph/nodes/{nodeID}`、`PUT .../graph/nodes/{nodeID}/states`、`DELETE .../graph/nodes/{nodeID}/states/{stateID}`、`POST /novels/{id}/graph/edges`、`PUT|DELETE /novels/{id}/graph/edges/{edgeID}`
 - `GET|POST /novels/{id}/workflows`、`PUT|DELETE /novels/{id}/workflows/{workflowID}`、`POST .../run`
-- `GET|PUT /settings/llm`、`POST /settings/llm/test`（登录后查看本机模型 API；仅首个账户可修改 / 测试）
-- `POST /novels/{id}/tasks/batch`、`GET /novels/{id}/tasks`、`GET /tasks/{taskID}`
+- `GET /settings/llm/providers`、`POST /settings/llm/providers`、`PUT|DELETE /settings/llm/providers/{providerID}`、`PUT .../{providerID}/default`、`POST /settings/llm/providers/test`（登录后查看；仅首个账户可管理 / 测试）
+- `GET|PUT /settings/llm`、`POST /settings/llm/test`（兼容旧单 Provider 设置入口）
+- `POST /novels/{id}/tasks/batch`（可传 `providerId`）、`POST .../workflows/{workflowID}/run`（可传 `providerId`）、`GET /novels/{id}/tasks`、`GET /tasks/{taskID}`
 - `GET /tasks/{taskID}/events`、`GET /tasks/{taskID}/ws`（WebSocket）、`POST /tasks/{taskID}/cancel|retry`
 - `GET /novels/{id}/proposals`、`POST .../proposals/{proposalID}/apply|reject`（`apply` 空请求体表示应用整份提案；也可传 `{"selectedHunks":[0,2],"applyTitle":true}` 只采纳差异视图中选中的段落组，并可单独选择标题）
 - `GET .../proposals/{proposalID}/merge-preview`、`POST .../proposals/{proposalID}/merge`（读取提案基准版本、当前正文和提案正文；所有者 / 编辑可提交手工整理后的合并稿，并通过 `expectedRevision` 防止预览后的并发覆盖）

@@ -28,6 +28,9 @@ file(GLOB_RECURSE AI_SOURCES "src/ai/*.cpp")
 file(GLOB_RECURSE DATABASE_SOURCES "src/database/*.cpp")
 file(GLOB_RECURSE UTILS_SOURCES "src/utils/*.cpp")
 
+# Header files
+file(GLOB_RECURSE HEADER_FILES "include/*.h")
+
 # Main executable
 add_executable(NovelStudio
     src/main.cpp

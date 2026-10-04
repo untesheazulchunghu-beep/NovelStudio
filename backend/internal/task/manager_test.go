@@ -54,6 +54,34 @@ func TestCancelStopsRunningTask(t *testing.T) {
 	t.Fatal("task did not transition to canceled")
 }
 
+func TestShutdownCancelsAndWaitsForRunningTasks(t *testing.T) {
+	db := openTaskTestDB(t)
+	started := make(chan struct{})
+	manager, err := NewManager(db, waitingGenerator{started: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, novelID, taskID := seedTask(t, db, "queued")
+	manager.Start(Request{ID: taskID, NovelID: novelID, UserID: userID, Instruction: "shutdown test", ApprovalMode: "manual", Chapters: []Chapter{{ID: database.NewID(), Number: 1, Title: "第一章", Revision: 1}}})
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := manager.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown should wait for cancellation: %v", err)
+	}
+	item, err := manager.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != "canceled" {
+		t.Fatalf("expected running task to be canceled during shutdown, got %s", item.Status)
+	}
+}
+
 type sequenceGenerator struct {
 	mu      sync.Mutex
 	prompts chan string

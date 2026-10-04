@@ -116,10 +116,15 @@ function chapterStatusLabel(task: NovelTask, status: string) {
     <div class="progress-track"><span :style="{ width: `${progress}%` }"></span></div>
     <div v-if="(task.totalTokens ?? 0) > 0" class="task-usage-breakdown">
       <strong>本任务 {{ (task.totalTokens ?? 0).toLocaleString() }} Token</strong>
-      <span>输入 {{ (task.promptTokens ?? 0).toLocaleString() }} · 输出 {{ (task.completionTokens ?? 0).toLocaleString() }}</span>
+      <span
+        >输入 {{ (task.promptTokens ?? 0).toLocaleString() }} · 输出
+        {{ (task.completionTokens ?? 0).toLocaleString() }}</span
+      >
       <small>
         {{ (task.reportedTokenCalls ?? 0).toLocaleString() }} 次实际用量
-        <template v-if="task.estimatedTokenCalls">· {{ (task.estimatedTokenCalls ?? 0).toLocaleString() }} 次估算用量</template>
+        <template v-if="task.estimatedTokenCalls"
+          >· {{ (task.estimatedTokenCalls ?? 0).toLocaleString() }} 次估算用量</template
+        >
       </small>
       <small>费用：{{ task.costKnown ? `$${(task.estimatedCostUsd ?? 0).toFixed(8)} USD` : '未配置费率' }}</small>
     </div>
@@ -160,11 +165,14 @@ function chapterStatusLabel(task: NovelTask, status: string) {
         <p>{{ item.issue }}</p>
         <small v-if="item.currentQuote">正文引文：{{ item.currentQuote }}</small>
         <small v-if="item.referenceSource || item.referenceQuote">
-          对照依据{{ item.referenceSource ? `（${item.referenceSource}）` : '' }}：{{ item.referenceQuote || '未提供引文' }}
+          对照依据{{ item.referenceSource ? `（${item.referenceSource}）` : '' }}：{{
+            item.referenceQuote || '未提供引文'
+          }}
         </small>
         <small>
-          模型把握 {{ item.confidence }} · 正文引文{{ item.currentQuoteVerbatim ? '逐字相符' : '待核实' }} ·
-          依据引文{{ item.referenceQuoteVerbatim ? '逐字相符' : '待核实' }}
+          模型把握 {{ item.confidence }} · 正文引文{{ item.currentQuoteVerbatim ? '逐字相符' : '待核实' }} · 依据引文{{
+            item.referenceQuoteVerbatim ? '逐字相符' : '待核实'
+          }}
         </small>
       </article>
     </div>

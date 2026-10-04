@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Novel } from '../api'
+import type { Chapter, Novel } from '../api'
 
 const showCreate = defineModel<boolean>('showCreate', { required: true })
 const novelTitle = defineModel<string>('novelTitle', { required: true })
@@ -9,6 +9,8 @@ const plannedChapters = defineModel<number>('plannedChapters', { required: true 
 
 defineProps<{
   novels: Novel[]
+  searchQuery: string
+  searchResults: Array<{ chapter: Chapter; novel: Novel }>
   stats: { chapterCount: number; words: number; entities: number; pending: number }
   canCreate: boolean
 }>()
@@ -16,6 +18,7 @@ defineProps<{
 const emit = defineEmits<{
   create: []
   open: [novel: Novel]
+  search: [query: string]
 }>()
 
 const coverSymbols = ['雾', '月', '岛', '光']
@@ -78,6 +81,26 @@ const coverSymbols = ['雾', '月', '岛', '光']
         <h2>继续你的故事</h2>
       </div>
       <span class="muted">{{ novels.length }} 个项目</span>
+    </div>
+    <div class="library-search">
+      <input
+        :value="searchQuery"
+        placeholder="搜索作品章节、正文或设定"
+        @input="emit('search', ($event.target as HTMLInputElement).value)"
+      />
+      <button v-if="searchQuery" class="text-button" @click="emit('search', '')">清除</button>
+    </div>
+    <div v-if="searchQuery.length >= 2" class="search-results">
+      <p v-if="!searchResults.length" class="muted">没有匹配的章节</p>
+      <button
+        v-for="result in searchResults"
+        :key="result.chapter.id"
+        class="search-result"
+        @click="emit('open', result.novel)"
+      >
+        <strong>{{ result.novel.title }} · 第 {{ result.chapter.number }} 章 · {{ result.chapter.title }}</strong>
+        <span>{{ result.chapter.body.slice(0, 120) }}</span>
+      </button>
     </div>
     <div v-if="novels.length" class="novel-grid">
       <button v-for="(novel, index) in novels" :key="novel.id" class="novel-card" @click="emit('open', novel)">

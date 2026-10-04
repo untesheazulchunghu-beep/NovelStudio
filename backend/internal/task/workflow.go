@@ -21,10 +21,11 @@ const (
 )
 
 type WorkflowNode struct {
-	ID     string
-	Kind   string
-	Title  string
-	Prompt string
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Title      string `json:"title"`
+	Prompt     string `json:"prompt"`
+	ProviderID string `json:"providerId,omitempty"`
 }
 
 // NodeResult is a node that already succeeded for one chapter. Retry reads
@@ -110,17 +111,25 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 	returns := 0
 	lastText := ""
 	lastDemo := m.demoModeFor(request.ProviderID)
+	lastProvider := request.ProviderID
 	stored := false
 	for index := 0; index < len(request.Nodes); {
 		if err := ctx.Err(); err != nil {
 			return "", "任务已取消", workflowCanceled
 		}
 		node := request.Nodes[index]
+		nodeProvider := request.ProviderID
+		if node.ProviderID != "" {
+			nodeProvider = node.ProviderID
+		}
 		if skip[node.ID] {
 			saved := outputs[node.ID]
 			if node.Kind == "generate" || node.Kind == "output" {
 				lastText = saved.Output
 				lastDemo = saved.Demo
+				if node.Kind == "generate" {
+					lastProvider = nodeProvider
+				}
 			}
 			index++
 			continue
@@ -138,7 +147,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			reviewNote := laterReviewOutput(request.Nodes, index, outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, reviewNote)
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, usage, err, demo := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
+			text, usage, err, demo := m.generate(ctx, nodeProvider, prompt, tokenBatch.add)
 			tokenBatch.flush()
 			m.recordUsage(request.ID, usage, map[string]any{
 				"chapterId": chapter.ID, "chapterNumber": chapter.Number,
@@ -160,6 +169,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			}
 			lastText = text
 			lastDemo = demo
+			lastProvider = nodeProvider
 			m.emitNode(request.ID, "node.finished", chapter, node, "succeeded", "")
 			m.rememberNode(request, chapter.ID, node.ID, text, demo)
 			outputs[node.ID] = NodeResult{ChapterID: chapter.ID, NodeID: node.ID, Status: "succeeded", Output: text, Demo: demo}
@@ -168,7 +178,7 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 			upstream := upstreamText(request.Nodes[:index], outputs)
 			prompt := buildNodePrompt(*request, chapter, node, upstream, "")
 			tokenBatch := newTokenBatcher(m, request.ID, chapter.ID)
-			text, usage, err, _ := m.generate(ctx, request.ProviderID, prompt, tokenBatch.add)
+			text, usage, err, _ := m.generate(ctx, nodeProvider, prompt, tokenBatch.add)
 			tokenBatch.flush()
 			m.recordUsage(request.ID, usage, map[string]any{
 				"chapterId": chapter.ID, "chapterNumber": chapter.Number,
@@ -227,7 +237,9 @@ func (m *Manager) executeWorkflowNodes(ctx context.Context, request *Request, ch
 				return "", message, workflowFailed
 			}
 			if !stored {
-				proposalID, applied, err := m.persistChapterOutput(ctx, *request, chapter, lastText, lastDemo)
+				outputRequest := *request
+				outputRequest.ProviderID = lastProvider
+				proposalID, applied, err := m.persistChapterOutput(ctx, outputRequest, chapter, lastText, lastDemo)
 				if err != nil {
 					if errors.Is(err, context.Canceled) {
 						m.emitNode(request.ID, "node.finished", chapter, node, "canceled", "任务已取消")
@@ -260,6 +272,9 @@ func (m *Manager) emitNode(taskID, eventType string, chapter Chapter, node Workf
 	data := map[string]any{
 		"nodeId": node.ID, "kind": node.Kind, "title": node.Title,
 		"chapterId": chapter.ID, "chapterNumber": chapter.Number,
+	}
+	if node.ProviderID != "" {
+		data["providerId"] = node.ProviderID
 	}
 	if status != "" {
 		data["status"] = status

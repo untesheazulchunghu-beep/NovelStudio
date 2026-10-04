@@ -32,7 +32,10 @@ import LoginPage from './components/LoginPage.vue'
 import MembersPage from './components/MembersPage.vue'
 import ModelSettingsPage from './components/ModelSettingsPage.vue'
 import UsagePage from './components/UsagePage.vue'
+import WritingStatsPage from './components/WritingStatsPage.vue'
+import AccountSettingsPage from './components/AccountSettingsPage.vue'
 import ProposalReviewPanel from './components/ProposalReviewPanel.vue'
+import ReferenceLibraryPage from './components/ReferenceLibraryPage.vue'
 import StaleProposalMergeDialog from './components/StaleProposalMergeDialog.vue'
 import TaskMonitorPanel from './components/TaskMonitorPanel.vue'
 import TrashPage from './components/TrashPage.vue'
@@ -52,12 +55,26 @@ import { countManuscriptCharacters } from './word-count'
 const user = ref<User | null>(null)
 const workspaces = ref<Workspace[]>([])
 const novels = ref<Novel[]>([])
+const searchQuery = ref('')
+const searchResults = ref<Array<{ chapter: Chapter; novel: Novel }>>([])
 const deletedNovels = ref<Novel[]>([])
 const activeNovel = ref<Novel | null>(null)
 const chapters = ref<Chapter[]>([])
 const deletedChapters = ref<Chapter[]>([])
 const activeChapterId = ref('')
-const section = ref<'library' | 'write' | 'knowledge' | 'workflow' | 'team' | 'trash' | 'settings' | 'usage'>('library')
+const section = ref<
+  | 'library'
+  | 'write'
+  | 'knowledge'
+  | 'references'
+  | 'workflow'
+  | 'stats'
+  | 'team'
+  | 'trash'
+  | 'settings'
+  | 'usage'
+  | 'account'
+>('library')
 const loading = ref(false)
 const message = ref('')
 const errorMessage = ref('')
@@ -65,6 +82,7 @@ const authMode = ref<'login' | 'register'>('register')
 const authEmail = ref('')
 const authPassword = ref('')
 const authBusy = ref(false)
+const localBooting = ref(true)
 const showCreate = ref(false)
 const novelTitle = ref('')
 const novelGenre = ref('')
@@ -200,7 +218,42 @@ async function loadSession() {
     await loadModelProviders()
     await loadNovels()
   } catch {
+    await startLocalWorkspace()
+  }
+}
+
+async function startLocalWorkspace(allowRecreate = true) {
+  const storageKey = 'novelstudio.local-workspace'
+  const saved = localStorage.getItem(storageKey)
+  let credentials: { email: string; password: string }
+  try {
+    credentials = saved ? (JSON.parse(saved) as { email: string; password: string }) : createLocalCredentials()
+  } catch {
+    credentials = createLocalCredentials()
+    localStorage.removeItem(storageKey)
+  }
+  try {
+    const result = saved
+      ? await api.login(credentials.email, credentials.password)
+      : await api.register(credentials.email, credentials.password)
+    localStorage.setItem(storageKey, JSON.stringify(credentials))
+    user.value = result.user
+    await loadSession()
+  } catch (error) {
+    if (saved && allowRecreate) {
+      localStorage.removeItem(storageKey)
+      await startLocalWorkspace(false)
+      return
+    }
     user.value = null
+    notify(error instanceof Error ? error.message : '本地工作台初始化失败', true)
+  }
+}
+
+function createLocalCredentials() {
+  return {
+    email: `writer-${crypto.randomUUID().slice(0, 8)}@local.novelstudio`,
+    password: `${crypto.randomUUID()}Aa1!`,
   }
 }
 
@@ -212,7 +265,10 @@ async function loadModelProviders() {
     canManageLocalSettings.value = result.canManage
     if (!result.canManage && section.value === 'usage') section.value = 'library'
     defaultProviderId.value = result.defaultProviderId
-    if (
+    const novelProviderId = activeNovel.value?.providerId ?? ''
+    if (novelProviderId && modelProviders.value.some((provider) => provider.id === novelProviderId)) {
+      selectedProviderId.value = novelProviderId
+    } else if (
       !modelProviders.value.some((provider) => provider.id === selectedProviderId.value) ||
       selectedProviderId.value === previousDefaultProviderId
     ) {
@@ -257,6 +313,7 @@ async function signOut() {
   activeNovel.value = null
   deletedChapters.value = []
   closeTaskSocket()
+  await startLocalWorkspace()
 }
 
 async function loadNovels() {
@@ -266,6 +323,42 @@ async function loadNovels() {
   if (activeNovel.value) {
     activeNovel.value = novels.value.find((novel) => novel.id === activeNovel.value?.id) ?? null
   }
+}
+
+let searchRequest = 0
+let searchTimer: number | undefined
+async function runNovelSearch(query: string) {
+  searchQuery.value = query
+  const requestID = ++searchRequest
+  if (query.trim().length < 2) {
+    searchResults.value = []
+    return
+  }
+  try {
+    const results = await Promise.all(
+      novels.value.map(async (novel) => {
+        const response = await api.searchNovel(novel.id, query.trim())
+        return response.chapters.map((chapter) => ({ chapter, novel }))
+      }),
+    )
+    if (requestID === searchRequest) searchResults.value = results.flat()
+  } catch (error) {
+    if (requestID === searchRequest) {
+      searchResults.value = []
+      if (error instanceof ApiError) errorMessage.value = error.message
+    }
+  }
+}
+
+function searchNovels(query: string) {
+  window.clearTimeout(searchTimer)
+  searchQuery.value = query
+  if (query.trim().length < 2) {
+    searchRequest += 1
+    searchResults.value = []
+    return
+  }
+  searchTimer = window.setTimeout(() => void runNovelSearch(query), 180)
 }
 
 async function openNovel(novel: Novel, nextSection: typeof section.value = 'write') {
@@ -279,6 +372,11 @@ async function openNovel(novel: Novel, nextSection: typeof section.value = 'writ
     cancelGraphEdgeEdit()
     activeNovel.value = novel
     guideDraft.value = novel.writingGuide ?? ''
+    if (novel.providerId && modelProviders.value.some((provider) => provider.id === novel.providerId)) {
+      selectedProviderId.value = novel.providerId
+    } else if (!modelProviders.value.some((provider) => provider.id === selectedProviderId.value)) {
+      selectedProviderId.value = defaultProviderId.value
+    }
     section.value = nextSection
     const chapterTrashRequest = canEdit.value
       ? api.deletedChapters(novel.id)
@@ -763,10 +861,7 @@ async function restoreChapter(chapter: Chapter) {
   if (hasUnsavedChanges()) cacheDraft()
   try {
     await api.restoreChapter(novel.id, chapter.id)
-    const [activeResult, deletedResult] = await Promise.all([
-      api.chapters(novel.id),
-      api.deletedChapters(novel.id),
-    ])
+    const [activeResult, deletedResult] = await Promise.all([api.chapters(novel.id), api.deletedChapters(novel.id)])
     if (activeNovel.value?.id !== novel.id) return
     chapters.value = activeResult.chapters
     deletedChapters.value = deletedResult.chapters
@@ -879,11 +974,33 @@ async function updateApprovalMode(event: Event) {
       plannedChapters: novel.plannedChapters,
       approvalMode: mode,
       writingGuide: novel.writingGuide,
+      providerId: novel.providerId ?? '',
     })
     novel.approvalMode = mode
     notify(mode === 'auto' ? '后续生成将自动写入章节' : '后续生成需要人工审核提案')
   } catch (error) {
     notify(error instanceof Error ? error.message : '更新审批设置失败', true)
+  }
+}
+
+async function updateDefaultProvider(providerId: string) {
+  if (!activeNovel.value || !canEdit.value) return
+  const novel = activeNovel.value
+  try {
+    await api.updateNovel(novel.id, {
+      title: novel.title,
+      summary: novel.summary,
+      genre: novel.genre,
+      plannedChapters: novel.plannedChapters,
+      approvalMode: novel.approvalMode,
+      writingGuide: novel.writingGuide,
+      providerId,
+    })
+    novel.providerId = providerId
+    selectedProviderId.value = providerId || defaultProviderId.value
+    notify(providerId ? '作品默认模型已更新' : '作品将跟随全局默认模型')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '更新作品默认模型失败', true)
   }
 }
 
@@ -899,6 +1016,7 @@ async function saveWritingGuide() {
       plannedChapters: novel.plannedChapters,
       approvalMode: novel.approvalMode,
       writingGuide: guideDraft.value,
+      providerId: novel.providerId ?? '',
     })
     novel.writingGuide = guideDraft.value
     notify('写作指南已保存，将注入后续生成')
@@ -1342,7 +1460,12 @@ async function startBatch() {
     return
   }
   try {
-    const task = await api.createBatchTask(activeNovel.value.id, ids, runInstruction.value.trim(), selectedProviderId.value)
+    const task = await api.createBatchTask(
+      activeNovel.value.id,
+      ids,
+      runInstruction.value.trim(),
+      selectedProviderId.value,
+    )
     await startTask(task)
   } catch (error) {
     notify(error instanceof Error ? error.message : '创建任务失败', true)
@@ -1361,7 +1484,12 @@ async function startReview() {
     return
   }
   try {
-    const task = await api.createReviewTask(activeNovel.value.id, ids, runInstruction.value.trim(), selectedProviderId.value)
+    const task = await api.createReviewTask(
+      activeNovel.value.id,
+      ids,
+      runInstruction.value.trim(),
+      selectedProviderId.value,
+    )
     await startTask(task)
   } catch (error) {
     notify(error instanceof Error ? error.message : '创建审稿任务失败', true)
@@ -1833,7 +1961,9 @@ watch([draftTitle, draftBody, draftGoal, draftKeyEvents, draftHook], () => {
   scheduleChapterAutoSave()
 })
 onMounted(() => {
-  void loadSession()
+  void loadSession().finally(() => {
+    localBooting.value = false
+  })
   window.addEventListener('beforeunload', beforeUnloadHandler)
 })
 onBeforeUnmount(() => {
@@ -1845,8 +1975,13 @@ onBeforeUnmount(closeTaskSocket)
 </script>
 
 <template>
+  <div v-if="localBooting" class="startup-screen">
+    <div class="startup-mark">N</div>
+    <strong>正在打开写作工作台</strong>
+    <span>准备你的作品与章节</span>
+  </div>
   <LoginPage
-    v-if="!user"
+    v-else-if="!user"
     v-model:auth-mode="authMode"
     v-model:email="authEmail"
     v-model:password="authPassword"
@@ -1885,7 +2020,25 @@ onBeforeUnmount(closeTaskSocket)
           <span v-if="deletedNovels.length" class="nav-count">{{ deletedNovels.length }}</span>
         </button>
       </nav>
-      <div class="side-label team-label">协作与设置</div>
+      <div v-if="activeNovel" class="side-label novel-label">当前作品</div>
+      <nav v-if="activeNovel" class="main-nav novel-nav">
+        <button :class="{ active: section === 'write' }" @click="section = 'write'">
+          <span class="nav-index">01</span>正文写作
+        </button>
+        <button :class="{ active: section === 'knowledge' }" @click="section = 'knowledge'">
+          <span class="nav-index">02</span>世界设定
+        </button>
+        <button :class="{ active: section === 'references' }" @click="section = 'references'">
+          <span class="nav-index">03</span>参考资料
+        </button>
+        <button :class="{ active: section === 'workflow' }" @click="section = 'workflow'">
+          <span class="nav-index">04</span>创作流程
+        </button>
+        <button :class="{ active: section === 'stats' }" @click="section = 'stats'">
+          <span class="nav-index">05</span>写作统计
+        </button>
+      </nav>
+      <div class="side-label team-label">协作与工具</div>
       <nav class="main-nav manage-nav">
         <button :disabled="!activeNovel" :class="{ active: section === 'team' }" @click="section = 'team'">
           <span class="nav-icon">◉</span>成员与权限
@@ -1895,6 +2048,9 @@ onBeforeUnmount(closeTaskSocket)
         </button>
         <button v-if="canManageLocalSettings" :class="{ active: section === 'usage' }" @click="section = 'usage'">
           <span class="nav-icon">◷</span>模型用量
+        </button>
+        <button :class="{ active: section === 'account' }" @click="section = 'account'">
+          <span class="nav-icon">👤</span>账户设置
         </button>
       </nav>
       <div class="sidebar-bottom">
@@ -1931,9 +2087,11 @@ onBeforeUnmount(closeTaskSocket)
                   ? 'API 设置'
                   : section === 'usage'
                     ? '模型用量'
-                    : (activeNovel?.title ?? '选择作品')
+                    : section === 'account'
+                      ? '账户设置'
+                      : (activeNovel?.title ?? '选择作品')
           }}</strong
-          ><template v-if="!['library', 'trash', 'settings', 'usage'].includes(section)"
+          ><template v-if="!['library', 'trash', 'settings', 'usage', 'account'].includes(section)"
             ><span class="crumb-sep">/</span
             ><span>{{
               section === 'write'
@@ -1964,10 +2122,13 @@ onBeforeUnmount(closeTaskSocket)
         v-model:novel-summary="novelSummary"
         v-model:planned-chapters="plannedChapters"
         :novels="novels"
+        :search-query="searchQuery"
+        :search-results="searchResults"
         :stats="stats"
         :can-create="canEdit || !novels.length"
         @create="createNovel"
         @open="openNovel"
+        @search="searchNovels"
       />
       <TrashPage
         v-else-if="section === 'trash'"
@@ -1977,6 +2138,13 @@ onBeforeUnmount(closeTaskSocket)
       />
       <ModelSettingsPage v-else-if="section === 'settings'" @providers-updated="loadModelProviders" />
       <UsagePage v-else-if="section === 'usage'" />
+      <AccountSettingsPage
+        v-else-if="section === 'account' && user"
+        :user="user"
+        :current-workspace-id="activeNovel?.workspaceId"
+        @logout="signOut"
+      />
+      <WritingStatsPage v-else-if="section === 'stats' && activeNovel" :novel-id="activeNovel.id" />
       <ChapterEditorPage
         v-else-if="section === 'write' && activeNovel"
         v-model:draft-title="draftTitle"
@@ -2012,8 +2180,11 @@ onBeforeUnmount(closeTaskSocket)
         :saving-guide="savingGuide"
         :markdown-href="api.exportNovel(activeNovel.id, 'md')"
         :text-href="api.exportNovel(activeNovel.id, 'txt')"
+        :epub-href="api.exportNovel(activeNovel.id, 'epub')"
+        :docx-href="api.exportNovel(activeNovel.id, 'docx')"
         :active-task-running="!!activeTask && ['queued', 'running'].includes(activeTask.status)"
         @update-approval="updateApprovalMode"
+        @update-default-provider="updateDefaultProvider"
         @add-chapter="addChapter"
         @save-chapter="saveChapter"
         @refresh-memory="refreshChapterMemory"
@@ -2069,6 +2240,11 @@ onBeforeUnmount(closeTaskSocket)
           />
         </template>
       </ChapterEditorPage>
+      <ReferenceLibraryPage
+        v-else-if="section === 'references' && activeNovel"
+        :novel="activeNovel"
+        :can-edit="canEdit"
+      />
       <KnowledgeGraphPage
         v-else-if="section === 'knowledge' && activeNovel"
         v-model:graph-form="graphForm"

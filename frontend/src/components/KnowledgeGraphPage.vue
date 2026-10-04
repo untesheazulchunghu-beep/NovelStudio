@@ -48,16 +48,16 @@ const graphKindLabels: Record<GraphNode['kind'], string> = {
   concept: '设定',
 }
 
-const selectedCharacter = computed(() =>
-  props.nodes.find((node) => node.id === editingNodeId.value && node.kind === 'character') ?? null,
+const selectedCharacter = computed(
+  () => props.nodes.find((node) => node.id === editingNodeId.value && node.kind === 'character') ?? null,
 )
 const selectedCharacterStates = computed(() =>
   props.characterStates
     .filter((state) => state.characterId === editingNodeId.value)
     .sort((a, b) => a.chapterNumber - b.chapterNumber),
 )
-const stateForSelectedChapter = computed(() =>
-  selectedCharacterStates.value.find((state) => state.chapterId === characterStateForm.value.chapterId) ?? null,
+const stateForSelectedChapter = computed(
+  () => selectedCharacterStates.value.find((state) => state.chapterId === characterStateForm.value.chapterId) ?? null,
 )
 
 function graphEdgeLabel(edge: GraphEdge) {
@@ -221,33 +221,56 @@ function onSelectNode(event: Event) {
               >年龄<input v-model="characterStateForm.age" maxlength="80" placeholder="例如：二十七岁、外表约四十岁"
             /></label>
             <label
-              >能力<textarea v-model="characterStateForm.abilities" rows="2" maxlength="1200" placeholder="能力与限制"></textarea
-            ></label>
+              >能力<textarea
+                v-model="characterStateForm.abilities"
+                rows="2"
+                maxlength="1200"
+                placeholder="能力与限制"
+              ></textarea>
+            </label>
             <label
-              >立场<textarea v-model="characterStateForm.stance" rows="2" maxlength="1200" placeholder="当前目标、阵营或态度"></textarea
-            ></label>
+              >立场<textarea
+                v-model="characterStateForm.stance"
+                rows="2"
+                maxlength="1200"
+                placeholder="当前目标、阵营或态度"
+              ></textarea>
+            </label>
             <label
-              >补充说明<textarea v-model="characterStateForm.notes" rows="2" maxlength="2000" placeholder="变化依据或其他状态"></textarea
-            ></label>
+              >补充说明<textarea
+                v-model="characterStateForm.notes"
+                rows="2"
+                maxlength="2000"
+                placeholder="变化依据或其他状态"
+              ></textarea>
+            </label>
             <p v-if="stateForSelectedChapter && !editingCharacterStateId" class="character-state-existing-hint">
               该章节已有记录，请在下方选择“编辑”。
             </p>
             <div class="graph-form-actions">
               <button
                 class="button secondary wide"
-                :disabled="!characterStateForm.chapterId || (stateForSelectedChapter && !editingCharacterStateId)"
+                :disabled="
+                  !characterStateForm.chapterId || Boolean(stateForSelectedChapter && !editingCharacterStateId)
+                "
                 @click="emit('saveCharacterState')"
               >
                 {{ editingCharacterStateId ? '更新章节状态' : '保存章节状态' }}
               </button>
-              <button v-if="editingCharacterStateId" class="text-button" @click="emit('cancelCharacterState')">取消编辑</button>
+              <button v-if="editingCharacterStateId" class="text-button" @click="emit('cancelCharacterState')">
+                取消编辑
+              </button>
             </div>
           </div>
           <div v-if="selectedCharacterStates.length" class="graph-item-list character-state-list">
             <div v-for="state in selectedCharacterStates" :key="state.id" class="graph-item-row character-state-row">
               <div>
                 <strong>第 {{ state.chapterNumber }} 章 · {{ state.chapterTitle }}</strong>
-                <small>{{ [state.appellation, state.age, state.abilities, state.stance, state.notes].filter(Boolean).join(' · ') || '未填写状态' }}</small>
+                <small>{{
+                  [state.appellation, state.age, state.abilities, state.stance, state.notes]
+                    .filter(Boolean)
+                    .join(' · ') || '未填写状态'
+                }}</small>
               </div>
               <div v-if="canEdit" class="graph-item-actions">
                 <button :disabled="!canEdit" @click="emit('editCharacterState', state)">编辑</button>

@@ -111,6 +111,36 @@ var migrations = []migration{
 		name:    "model-usage-accounting",
 		apply:   migrateModelUsage,
 	},
+	{
+		version: 8,
+		name:    "novel-provider",
+		apply:   migrateNovelProvider,
+	},
+	{
+		version: 9,
+		name:    "chapter-full-text-search",
+		apply:   migrateChapterFullTextSearch,
+	},
+	{
+		version: 10,
+		name:    "reference-library",
+		apply:   migrateReferenceLibrary,
+	},
+	{
+		version: 11,
+		name:    "audit-logs",
+		apply:   migrateAuditLogs,
+	},
+	{
+		version: 12,
+		name:    "writing-stats",
+		apply:   migrateWritingStats,
+	},
+	{
+		version: 13,
+		name:    "workspace-invitations",
+		apply:   migrateWorkspaceInvitations,
+	},
 }
 
 type columnMigration struct {
@@ -123,12 +153,132 @@ var columnMigrations = []columnMigration{
 	{"users", "session_version", "INTEGER NOT NULL DEFAULT 1"},
 	{"novels", "writing_guide", "TEXT NOT NULL DEFAULT ''"},
 	{"novels", "deleted_at", "TEXT"},
+	{"novels", "daily_word_goal", "INTEGER NOT NULL DEFAULT 0"},
 	{"chapters", "deleted_at", "TEXT"},
 	{"chapters", "goal", "TEXT NOT NULL DEFAULT ''"},
 	{"chapters", "key_events", "TEXT NOT NULL DEFAULT ''"},
 	{"chapters", "suspense_hook", "TEXT NOT NULL DEFAULT ''"},
 	{"tasks", "request_json", "TEXT NOT NULL DEFAULT ''"},
 	{"tasks", "retry_task_id", "TEXT NOT NULL DEFAULT ''"},
+}
+
+func migrateNovelProvider(tx *sql.Tx) error {
+	exists, err := columnExists(tx, "novels", "provider_id")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.Exec(`ALTER TABLE novels ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func migrateChapterFullTextSearch(tx *sql.Tx) error {
+	for _, column := range []struct{ name, definition string }{
+		{"goal", "TEXT NOT NULL DEFAULT ''"},
+		{"key_events", "TEXT NOT NULL DEFAULT ''"},
+		{"suspense_hook", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := columnExists(tx, "chapters", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.Exec(`ALTER TABLE chapters ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := tx.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS chapters_fts USING fts5(
+			title, body, goal, key_events, suspense_hook,
+			content='chapters', content_rowid='rowid', tokenize='unicode61'
+		);
+		INSERT INTO chapters_fts(chapters_fts) VALUES ('rebuild');
+		CREATE TRIGGER IF NOT EXISTS chapters_fts_insert AFTER INSERT ON chapters BEGIN
+			INSERT INTO chapters_fts(rowid, title, body, goal, key_events, suspense_hook)
+			VALUES (new.rowid, new.title, new.body, new.goal, new.key_events, new.suspense_hook);
+		END;
+		CREATE TRIGGER IF NOT EXISTS chapters_fts_delete AFTER DELETE ON chapters BEGIN
+			INSERT INTO chapters_fts(chapters_fts, rowid, title, body, goal, key_events, suspense_hook)
+			VALUES ('delete', old.rowid, old.title, old.body, old.goal, old.key_events, old.suspense_hook);
+		END;
+		CREATE TRIGGER IF NOT EXISTS chapters_fts_update AFTER UPDATE OF title, body, goal, key_events, suspense_hook ON chapters BEGIN
+			INSERT INTO chapters_fts(chapters_fts, rowid, title, body, goal, key_events, suspense_hook)
+			VALUES ('delete', old.rowid, old.title, old.body, old.goal, old.key_events, old.suspense_hook);
+			INSERT INTO chapters_fts(rowid, title, body, goal, key_events, suspense_hook)
+			VALUES (new.rowid, new.title, new.body, new.goal, new.key_events, new.suspense_hook);
+		END;
+	`)
+	return err
+}
+
+func migrateReferenceLibrary(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS reference_documents (
+			id TEXT PRIMARY KEY,
+			novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS reference_chunks (
+			id TEXT PRIMARY KEY,
+			document_id TEXT NOT NULL REFERENCES reference_documents(id) ON DELETE CASCADE,
+			chunk_number INTEGER NOT NULL,
+			content TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE(document_id, chunk_number)
+		);
+		CREATE VIRTUAL TABLE IF NOT EXISTS reference_chunks_fts USING fts5(content, content='reference_chunks', content_rowid='rowid', tokenize='unicode61');
+		CREATE TRIGGER IF NOT EXISTS reference_chunks_fts_insert AFTER INSERT ON reference_chunks BEGIN
+			INSERT INTO reference_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+		END;
+		CREATE TRIGGER IF NOT EXISTS reference_chunks_fts_delete AFTER DELETE ON reference_chunks BEGIN
+			INSERT INTO reference_chunks_fts(reference_chunks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+		END;
+		CREATE TRIGGER IF NOT EXISTS reference_chunks_fts_update AFTER UPDATE OF content ON reference_chunks BEGIN
+			INSERT INTO reference_chunks_fts(reference_chunks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+			INSERT INTO reference_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+		END;
+	`)
+	return err
+}
+
+func migrateAuditLogs(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS audit_logs (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			novel_id TEXT REFERENCES novels(id) ON DELETE SET NULL,
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			metadata TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_novel_id ON audit_logs(novel_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+	`)
+	return err
+}
+
+func migrateWritingStats(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS writing_stats (
+			novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+			date TEXT NOT NULL,
+			words_added INTEGER NOT NULL DEFAULT 0,
+			words_deleted INTEGER NOT NULL DEFAULT 0,
+			net_words INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (novel_id, date)
+		);
+		CREATE INDEX IF NOT EXISTS idx_writing_stats_novel_date ON writing_stats(novel_id, date DESC);
+	`)
+	return err
 }
 
 func migrate(db *sql.DB) error {
@@ -371,6 +521,7 @@ var schemaStatements = []string{
     planned_chapters INTEGER NOT NULL DEFAULT 0,
     approval_mode TEXT NOT NULL DEFAULT 'manual' CHECK (approval_mode IN ('manual', 'auto')),
     writing_guide TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
     deleted_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -551,4 +702,23 @@ func init() {
 	schemaStatements = append(schemaStatements, chapterMemoryStatements...)
 	schemaStatements = append(schemaStatements, characterStateStatements...)
 	schemaStatements = append(schemaStatements, modelProviderStatements...)
+}
+
+func migrateWorkspaceInvitations(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS workspace_invitations (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			created_by TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			used_by TEXT,
+			used_at TEXT,
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+			FOREIGN KEY (created_by) REFERENCES users(id),
+			FOREIGN KEY (used_by) REFERENCES users(id)
+		)
+	`)
+	return err
 }

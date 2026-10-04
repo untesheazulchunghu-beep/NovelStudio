@@ -88,6 +88,42 @@ CREATE TABLE chapters (
 	again.Close()
 }
 
+func TestChapterFullTextIndexStaysInSync(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "fts.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, email, password_hash, created_at) VALUES ('u1', 'fts@example.test', 'hash', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, owner_id, created_at) VALUES ('w1', '写作', 'u1', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO novels (id, workspace_id, title, created_at, updated_at) VALUES ('n1', 'w1', '作品', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO chapters (id, novel_id, chapter_number, title, body, updated_at) VALUES ('c1', 'n1', 1, 'Harbor', 'The old bell rings', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chapters_fts f JOIN chapters c ON c.rowid = f.rowid WHERE chapters_fts MATCH 'bell'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("full-text index should find inserted chapter, got %d", count)
+	}
+	if _, err := db.Exec(`UPDATE chapters SET body = 'The waves cover the sound' WHERE id = 'c1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chapters_fts f JOIN chapters c ON c.rowid = f.rowid WHERE chapters_fts MATCH 'bell'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("full-text index retained removed text, got %d", count)
+	}
+}
+
 func TestMigrateAddsRecoverableTaskFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-tasks.sqlite")
 	legacy, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))

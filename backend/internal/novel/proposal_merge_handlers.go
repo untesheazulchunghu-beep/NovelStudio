@@ -3,10 +3,12 @@ package novel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
+	"novelstudio/internal/audit"
 	"novelstudio/internal/database"
 	"novelstudio/internal/task"
 )
@@ -92,12 +94,12 @@ func (s *Server) applyMergedProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proposalID := r.PathValue("proposalID")
-	var chapterID, proposalStatus string
+	var chapterID, proposalStatus, requestJSON string
 	var baseRevision int
 	var demoMode bool
-	err := s.db.QueryRowContext(r.Context(), `SELECT chapter_id, base_revision, status, demo_mode
-		FROM proposals WHERE id = ? AND novel_id = ?`, proposalID, novelID).
-		Scan(&chapterID, &baseRevision, &proposalStatus, &demoMode)
+	err := s.db.QueryRowContext(r.Context(), `SELECT p.chapter_id, p.base_revision, p.status, p.demo_mode, COALESCE(t.request_json, '')
+		FROM proposals p LEFT JOIN tasks t ON t.id = p.task_id WHERE p.id = ? AND p.novel_id = ?`, proposalID, novelID).
+		Scan(&chapterID, &baseRevision, &proposalStatus, &demoMode, &requestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "提案不存在")
 		return
@@ -145,10 +147,17 @@ func (s *Server) applyMergedProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storeMemory := !demoMode && !s.tasks.DemoMode()
+	providerID := ""
+	if requestJSON != "" {
+		var request task.Request
+		if json.Unmarshal([]byte(requestJSON), &request) == nil {
+			providerID = request.ProviderID
+		}
+	}
+	storeMemory := !demoMode && !s.tasks.DemoModeFor(providerID)
 	var memory task.ChapterMemory
 	if storeMemory {
-		memory, err = s.tasks.ComposeChapterMemory(r.Context(), task.Chapter{
+		memory, err = s.tasks.ComposeChapterMemoryFor(r.Context(), providerID, task.Chapter{
 			ID: current.ID, Number: current.Number, Title: input.Title, Body: input.Text,
 		}, input.Text)
 		if err != nil {
@@ -244,6 +253,21 @@ func (s *Server) applyMergedProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
 		return
 	}
+
+	// Log audit entry
+	auditMetadata := map[string]interface{}{
+		"proposal_id":       proposalID,
+		"chapter_id":        chapterID,
+		"chapter_number":    current.Number,
+		"base_revision":     baseRevision,
+		"merged_revision":   input.ExpectedRevision + 1,
+		"was_stale_merge":   true,
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionApplyProposal, audit.TargetTypeProposal, proposalID, auditMetadata); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
+		return
+	}
+
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "合并提案失败")
 		return

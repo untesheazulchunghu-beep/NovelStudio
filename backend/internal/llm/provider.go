@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,10 @@ type GenerationUsage struct {
 	Model            string
 	CostUSD          float64
 	CostKnown        bool
+}
+
+type AvailableModel struct {
+	ID string `json:"id"`
 }
 
 type GenerationError struct {
@@ -88,30 +93,61 @@ func (p *Provider) DemoMode() bool {
 }
 
 func (p *Provider) TestConnection(ctx context.Context) error {
+	_, err := p.ListModels(ctx)
+	return err
+}
+
+func (p *Provider) ListModels(ctx context.Context) ([]AvailableModel, error) {
 	if p.apiKey == "" {
-		return &GenerationError{message: "请先填写 API Key"}
+		return nil, &GenerationError{message: "请先填写 API Key"}
 	}
-	baseURL := p.baseURL
-	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-	if !strings.HasSuffix(baseURL, "/models") {
-		baseURL += "/models"
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL(p.baseURL), nil)
 	if err != nil {
-		return requestFailure(err)
+		return nil, requestFailure(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+p.apiKey)
 	request.Header.Set("Accept", "application/json")
 	response, err := p.client.Do(request)
 	if err != nil {
-		return requestFailure(err)
+		return nil, requestFailure(err)
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return classifiedError(response.StatusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+		return nil, classifiedError(response.StatusCode)
 	}
-	return nil
+	var payload struct {
+		Data []AvailableModel `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) {
+			return []AvailableModel{}, nil
+		}
+		return nil, requestFailure(err)
+	}
+	models := make([]AvailableModel, 0, len(payload.Data))
+	seen := make(map[string]struct{}, len(payload.Data))
+	for _, model := range payload.Data {
+		model.ID = strings.TrimSpace(model.ID)
+		if model.ID == "" {
+			continue
+		}
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models, nil
+}
+
+func modelsURL(baseURL string) string {
+	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+	if !strings.HasSuffix(baseURL, "/models") {
+		baseURL += "/models"
+	}
+	return baseURL
 }
 
 func (p *Provider) Generate(ctx context.Context, prompt string, emit func(string)) (string, error) {

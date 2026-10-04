@@ -9,6 +9,7 @@ export type Novel = {
   plannedChapters: number
   approvalMode: 'manual' | 'auto'
   writingGuide: string
+  providerId?: string
   chapterCount: number
   deletedAt?: string
 }
@@ -52,7 +53,10 @@ export type CharacterState = {
   notes: string
   updatedAt: string
 }
-export type CharacterStateInput = Pick<CharacterState, 'chapterId' | 'appellation' | 'age' | 'abilities' | 'stance' | 'notes'>
+export type CharacterStateInput = Pick<
+  CharacterState,
+  'chapterId' | 'appellation' | 'age' | 'abilities' | 'stance' | 'notes'
+>
 export type GraphEdge = {
   id: string
   novelId: string
@@ -66,6 +70,7 @@ export type WorkflowNode = {
   kind: 'context' | 'generate' | 'review' | 'output'
   title: string
   prompt: string
+  providerId?: string
   x: number
   y: number
 }
@@ -96,6 +101,7 @@ export type ModelProvider = ModelSettings & {
   name: string
   isDefault: boolean
 }
+export type AvailableModel = { id: string }
 export type ModelProviderInput = Omit<ModelProvider, 'id' | 'apiKeyConfigured' | 'isDefault'> & {
   apiKey: string
   clearApiKey: boolean
@@ -122,6 +128,15 @@ export type NovelTask = {
   costUnknownCalls?: number
   costKnown?: boolean
 }
+export type ReferenceDocument = {
+  id: string
+  novelId: string
+  title: string
+  chunkCount: number
+  createdAt: string
+  updatedAt: string
+}
+export type ReferenceHit = { id: string; documentId: string; title: string; chunkNumber: number; content: string }
 export type UsageTotals = {
   promptTokens: number
   completionTokens: number
@@ -237,6 +252,11 @@ export const api = {
   login: (email: string, password: string) => request<{ user: User }>('/auth/login', json({ email, password })),
   register: (email: string, password: string) => request<{ user: User }>('/auth/register', json({ email, password })),
   logout: () => request<{ ok: boolean }>('/auth/logout', json({})),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    request<{ ok: boolean }>('/auth/password', {
+      method: 'PUT',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
   modelSettings: () => request<ModelSettingsResponse>('/settings/llm'),
   updateModelSettings: (input: ModelSettingsInput) => request<ModelSettings>('/settings/llm', put(input)),
   testModelSettings: (input: ModelSettingsInput) =>
@@ -252,6 +272,7 @@ export const api = {
     request<{ ok: boolean; defaultProviderId: string }>(`/settings/llm/providers/${id}/default`, put({})),
   testModelProvider: (id: string, input: ModelProviderInput) =>
     request<{ ok: boolean; message: string }>('/settings/llm/providers/test', json({ id, ...input })),
+  providerModels: (id: string) => request<{ models: AvailableModel[] }>(`/settings/llm/providers/${id}/models`),
   modelUsage: () => request<ModelUsageReport>('/admin/usage'),
   novels: () => request<{ novels: Novel[] }>('/novels'),
   deletedNovels: () => request<{ novels: Novel[] }>('/novels/trash'),
@@ -264,16 +285,33 @@ export const api = {
     plannedChapters: number,
     workspaceId: string,
     writingGuide = '',
+    providerId = '',
   ) =>
     request<Novel>(
       '/novels',
-      json({ title, summary, genre, plannedChapters, workspaceId, approvalMode: 'manual', writingGuide }),
+      json({ title, summary, genre, plannedChapters, workspaceId, approvalMode: 'manual', writingGuide, providerId }),
     ),
   updateNovel: (
     id: string,
-    input: Pick<Novel, 'title' | 'summary' | 'genre' | 'plannedChapters' | 'approvalMode' | 'writingGuide'>,
+    input: Pick<
+      Novel,
+      'title' | 'summary' | 'genre' | 'plannedChapters' | 'approvalMode' | 'writingGuide' | 'providerId'
+    >,
   ) => request<{ ok: boolean }>(`/novels/${id}`, put(input)),
-  exportNovel: (id: string, format: 'txt' | 'md') => `/api/v1/novels/${id}/export?format=${format}`,
+  exportNovel: (id: string, format: 'txt' | 'md' | 'epub' | 'docx') => `/api/v1/novels/${id}/export?format=${format}`,
+  searchNovel: (novelId: string, query: string, limit = 20) =>
+    request<{ query: string; chapters: Chapter[] }>(
+      `/novels/${novelId}/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+  references: (novelId: string) => request<{ documents: ReferenceDocument[] }>(`/novels/${novelId}/references`),
+  createReference: (novelId: string, input: { title: string; content: string }) =>
+    request<ReferenceDocument>(`/novels/${novelId}/references`, { method: 'POST', body: JSON.stringify(input) }),
+  deleteReference: (novelId: string, documentId: string) =>
+    request<{ ok: boolean }>(`/novels/${novelId}/references/${documentId}`, { method: 'DELETE' }),
+  searchReferences: (novelId: string, query: string) =>
+    request<{ query: string; results: ReferenceHit[] }>(
+      `/novels/${novelId}/references/search?q=${encodeURIComponent(query)}`,
+    ),
   chapters: (novelId: string) => request<{ chapters: Chapter[] }>(`/novels/${novelId}/chapters`),
   deletedChapters: (novelId: string) => request<{ chapters: Chapter[] }>(`/novels/${novelId}/chapters/trash`),
   deleteChapter: (novelId: string, chapterId: string) =>
@@ -343,7 +381,10 @@ export const api = {
   createReviewTask: (novelId: string, chapterIds: string[], instruction: string, providerId = '') =>
     request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, providerId, kind: 'review' })),
   createContinuityTask: (novelId: string, chapterIds: string[], instruction: string, providerId = '') =>
-    request<NovelTask>(`/novels/${novelId}/tasks/batch`, json({ chapterIds, instruction, providerId, kind: 'continuity' })),
+    request<NovelTask>(
+      `/novels/${novelId}/tasks/batch`,
+      json({ chapterIds, instruction, providerId, kind: 'continuity' }),
+    ),
   tasks: (novelId: string) => request<{ tasks: NovelTask[] }>(`/novels/${novelId}/tasks`),
   task: (taskId: string) => request<NovelTask>(`/tasks/${taskId}`),
   cancelTask: (taskId: string) => request<{ ok: boolean }>(`/tasks/${taskId}/cancel`, json({})),
@@ -370,19 +411,101 @@ export const api = {
     request<{ ok: boolean }>(`/workspaces/${workspaceId}/members/${userId}`, put({ role })),
   removeMember: (workspaceId: string, userId: string) =>
     request<{ ok: boolean }>(`/workspaces/${workspaceId}/members/${userId}`, { method: 'DELETE' }),
+  createInvitation: (workspaceId: string, role: string, expiresIn: number) =>
+    request<Invitation>(`/workspaces/${workspaceId}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify({ role, expires_in: expiresIn }),
+    }),
+  listInvitations: (workspaceId: string) => request<Invitation[]>(`/workspaces/${workspaceId}/invitations`),
+  deleteInvitation: (workspaceId: string, invitationId: string) =>
+    request<void>(`/workspaces/${workspaceId}/invitations/${invitationId}`, { method: 'DELETE' }),
+  acceptInvitation: (invitationId: string) =>
+    request<{ workspace_id: string }>(`/invitations/${invitationId}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+}
+
+export type WritingStat = {
+  date: string
+  wordsAdded: number
+  wordsDeleted: number
+  netWords: number
+}
+
+export type WritingGoal = {
+  dailyWordGoal: number
+}
+
+export async function fetchWritingStats(novelId: string, days: number = 30): Promise<WritingStat[]> {
+  return request<WritingStat[]>(`/novels/${novelId}/stats?days=${days}`)
+}
+
+export async function fetchWritingGoal(novelId: string): Promise<WritingGoal> {
+  return request<WritingGoal>(`/novels/${novelId}/goal`)
+}
+
+export async function updateWritingGoal(novelId: string, dailyWordGoal: number): Promise<void> {
+  await request<void>(`/novels/${novelId}/goal`, put({ dailyWordGoal }))
 }
 
 export function connectTask(taskId: string, after: number, onEvent: (event: TaskEvent) => void, onClose: () => void) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/tasks/${taskId}/ws?after=${after}`)
+  let closed = false
+  const closeOnce = () => {
+    if (closed) return
+    closed = true
+    onClose()
+  }
   socket.onmessage = (message) => {
     try {
       onEvent(JSON.parse(message.data) as TaskEvent)
     } catch {
-      onClose()
+      closeOnce()
     }
   }
-  socket.onclose = onClose
-  socket.onerror = onClose
+  socket.onclose = closeOnce
+  socket.onerror = closeOnce
   return socket
+}
+
+export type Invitation = {
+  id: string
+  workspace_id: string
+  role: string
+  created_by: string
+  expires_at: string
+  used_by?: string
+  used_at?: string
+  created_at: string
+}
+
+export async function createInvitation(workspaceId: string, role: string, expiresIn: number): Promise<Invitation> {
+  return request<Invitation>(`/workspaces/${workspaceId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ role, expires_in: expiresIn }),
+  })
+}
+
+export async function listInvitations(workspaceId: string): Promise<Invitation[]> {
+  return request<Invitation[]>(`/workspaces/${workspaceId}/invitations`)
+}
+
+export async function deleteInvitation(workspaceId: string, invitationId: string): Promise<void> {
+  await request<void>(`/workspaces/${workspaceId}/invitations/${invitationId}`, { method: 'DELETE' })
+}
+
+export async function acceptInvitation(invitationId: string): Promise<{ workspace_id: string }> {
+  return request<{ workspace_id: string }>(`/invitations/${invitationId}/accept`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  await request<void>('/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  })
 }

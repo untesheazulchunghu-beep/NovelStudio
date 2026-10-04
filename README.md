@@ -9,40 +9,42 @@
 
 ## 功能概览
 
-| 模块 | 说明 |
-| --- | --- |
-| 账户与工作区 | 邮箱注册/登录（会话 Cookie + HMAC 签名），工作区角色：所有者 / 编辑 / 审阅者 / 只读 |
-| 作品库 | 创建小说项目，设置题材、计划章节数与 Agent 写入模式（人工审核 / 自动写入） |
-| 回收站 | 作品与章节可移入回收站并由编辑/所有者恢复；工作流可删除 |
-| 写作指南 | 作品级文风与硬性约束（建议用「禁止…」「必须…」的负向指令），每次生成都会注入 |
-| 章节蓝图 | 每章的目标、关键事件与章末钩子；只改蓝图不影响正文版本号。生成时注入上一章结尾，并按蓝图点名的人物、地点挑选相关图谱与未回收伏笔 |
-| 章节编辑 | 章节正文编辑、2.5 秒防抖自动保存与本地草稿缓存、版本冲突对比、历史版本记录与恢复 |
-| 知识图谱 | 人物 / 地点 / 组织 / 物件 / 设定实体及关系。生成时只注入本章蓝图点名的人物、地点及相关关系，不再按固定条数截取前缀 |
-| 人物章节状态 | 在人物图谱实体下按章节记录称谓、年龄、能力、立场与补充说明；生成和连续性检查会引用目标章节及之前最近一条有效状态 |
-| 创作工作流 | 可视化编排「资料 → 生成 → 自检 → 输出」节点，并按依赖顺序逐个执行。资料节点不调用模型；生成和审稿节点各自调用一次，后一个节点能看到前一个节点的结果。审稿不通过会退回前一个生成节点，次数有上限。输出节点按人工审核、自动写入或演示模式决定是否改正文。可直接创建「章节起草」「起草 → 审稿 → 修改」「只润色」。这里的审稿节点只区分通过 / 不通过，不是按关键事件逐条核对的审稿清单 |
-| 关键事件审稿 | 从生成任务入口发起，不走工作流节点，不改正文，也不产生章节提案。蓝图「关键事件」的每个非空行是一条，结果为已完成、未完成或待核实，并保存模型判断、引文和位置。已完成只接受当前正文里的逐字引文；引文对得上本身不会变成已完成。没有非空关键事件时给出空清单 |
-| 连续性检查 | 从章节编辑器单独发起，按当前正文挑选相关图谱事实、截至目标章节的人物状态和已定稿章节记忆，提示时间线、人物状态与设定冲突。显示正文与来源引文的逐字核对结果；只供作者参考，不改正文、不创建提案 |
-| 模型接入设置 | 首个账户可在 UI 配置本机共享的 OpenAI 兼容 API 地址、密钥、模型、生成参数和 USD / 百万 Token 单价；测试连接后立即生效，密钥不会由设置接口回显 |
-| 模型用量 | 本机首个账户可按任务、作品和用户查看输入 / 输出 Token 与估算费用；服务商返回的 usage 标为实际用量，未返回时按文本长度估算并明确标记。两项费率均为 0 时显示未配置费率 |
-| 长篇记忆 | 应用提案或自动写入后，为该章保存摘要、出场人物、新增设定与伏笔变化；再次定稿会替换这一章的当前记录。手动编辑或恢复正文版本会将旧记忆标为待刷新，并从后续生成上下文中排除；可在章节编辑器按需刷新。未应用的提案和未确认的演示生成不写入记忆 |
-| 生成任务 | 批量或按工作流生成章节；实时进度、Token 流、取消；逐章状态，失败后可只重试尚未成功的章节；模型临时故障自动重试并提供分类提示。提示词在上下文预算内注入近期章节摘要、蓝图相关的图谱事实、目标章节适用的人物状态和尚未回收的伏笔；详情列出本次注入项和未注入项。结果进入提案审核或自动写入 |
-| 提案审核 | 按段落组对比生成提案，可选择采纳部分修改或整份提案，标题可单独采纳；应用前保留旧版本并校验章节版本；过期提案可查看基准、当前和提案版本，编辑者可手工整理三方合并稿，也可按原要求重新生成 |
+| 模块         | 说明                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 账户与工作区 | 邮箱注册/登录（会话 Cookie + HMAC 签名），工作区角色：所有者 / 编辑 / 审阅者 / 只读                                                                                                                                                                                                                                                                                                |
+| 作品库       | 创建小说项目，设置题材、计划章节数与 Agent 写入模式（人工审核 / 自动写入）                                                                                                                                                                                                                                                                                                         |
+| 回收站       | 作品与章节可移入回收站并由编辑/所有者恢复；工作流可删除                                                                                                                                                                                                                                                                                                                            |
+| 写作指南     | 作品级文风与硬性约束（建议用「禁止…」「必须…」的负向指令），每次生成都会注入                                                                                                                                                                                                                                                                                                       |
+| 章节蓝图     | 每章的目标、关键事件与章末钩子；只改蓝图不影响正文版本号。生成时注入上一章结尾，并按蓝图点名的人物、地点挑选相关图谱与未回收伏笔                                                                                                                                                                                                                                                   |
+| 章节编辑     | 章节正文编辑、2.5 秒防抖自动保存与本地草稿缓存、版本冲突对比、历史版本记录与恢复                                                                                                                                                                                                                                                                                                   |
+| 知识图谱     | 人物 / 地点 / 组织 / 物件 / 设定实体及关系。生成时只注入本章蓝图点名的人物、地点及相关关系，不再按固定条数截取前缀                                                                                                                                                                                                                                                                 |
+| 人物章节状态 | 在人物图谱实体下按章节记录称谓、年龄、能力、立场与补充说明；生成和连续性检查会引用目标章节及之前最近一条有效状态                                                                                                                                                                                                                                                                   |
+| 创作工作流   | 可视化编排「资料 → 生成 → 自检 → 输出」节点，并按依赖顺序逐个执行。资料节点不调用模型；生成和审稿节点各自调用一次，后一个节点能看到前一个节点的结果。审稿不通过会退回前一个生成节点，次数有上限。输出节点按人工审核、自动写入或演示模式决定是否改正文。可直接创建「章节起草」「起草 → 审稿 → 修改」「只润色」。这里的审稿节点只区分通过 / 不通过，不是按关键事件逐条核对的审稿清单 |
+| 关键事件审稿 | 从生成任务入口发起，不走工作流节点，不改正文，也不产生章节提案。蓝图「关键事件」的每个非空行是一条，结果为已完成、未完成或待核实，并保存模型判断、引文和位置。已完成只接受当前正文里的逐字引文；引文对得上本身不会变成已完成。没有非空关键事件时给出空清单                                                                                                                         |
+| 连续性检查   | 从章节编辑器单独发起，按当前正文挑选相关图谱事实、截至目标章节的人物状态和已定稿章节记忆，提示时间线、人物状态与设定冲突。显示正文与来源引文的逐字核对结果；只供作者参考，不改正文、不创建提案                                                                                                                                                                                     |
+| 模型接入设置 | 首个账户可在 UI 配置本机共享的 OpenAI 兼容 API 地址、密钥、模型、生成参数和 USD / 百万 Token 单价；测试连接后立即生效，密钥不会由设置接口回显                                                                                                                                                                                                                                      |
+| 模型用量     | 本机首个账户可按任务、作品和用户查看输入 / 输出 Token 与估算费用；服务商返回的 usage 标为实际用量，未返回时按文本长度估算并明确标记。两项费率均为 0 时显示未配置费率                                                                                                                                                                                                               |
+| 写作统计     | 按作品查看最近 30 天的每日写作字数（新增、删除、净增），设置每日字数目标并追踪完成情况。保存章节或应用提案时自动更新当日统计                                                                                                                                                                                                                                                    |
+| 长篇记忆     | 应用提案或自动写入后，为该章保存摘要、出场人物、新增设定与伏笔变化；再次定稿会替换这一章的当前记录。手动编辑或恢复正文版本会将旧记忆标为待刷新，并从后续生成上下文中排除；可在章节编辑器按需刷新。未应用的提案和未确认的演示生成不写入记忆                                                                                                                                         |
+| 生成任务     | 批量或按工作流生成章节；实时进度、Token 流、取消；逐章状态，失败后可只重试尚未成功的章节；模型临时故障自动重试并提供分类提示。提示词在上下文预算内注入近期章节摘要、蓝图相关的图谱事实、目标章节适用的人物状态和尚未回收的伏笔；详情列出本次注入项和未注入项。结果进入提案审核或自动写入                                                                                           |
+| 提案审核     | 按段落组对比生成提案，可选择采纳部分修改或整份提案，标题可单独采纳；应用前保留旧版本并校验章节版本；过期提案可查看基准、当前和提案版本，编辑者可手工整理三方合并稿，也可按原要求重新生成                                                                                                                                                                                           |
 
 ## 权限矩阵
 
 权限在小说所属工作区内生效；只有工作区成员能访问项目。
 
-| 操作 | 所有者 | 编辑 | 审阅者 | 只读 |
-| --- | --- | --- | --- | --- |
-| 查看作品、章节、图谱、工作流、任务事件与导出 | 是 | 是 | 是 | 是 |
-| 查看已删除作品 | 是 | 是 | 是 | 是 |
-| 查看已删除章节 | 是 | 是 | 否 | 否 |
-| 编辑章节、写作指南、图谱、工作流；调整章节顺序 | 是 | 是 | 否 | 否 |
-| 启动/取消/重试生成，重新生成过期提案 | 是 | 是 | 否 | 否 |
-| 移入回收站或恢复作品/章节，永久删除工作流 | 是 | 是 | 否 | 否 |
-| 应用或拒绝提案 | 是 | 是 | 是 | 否 |
-| 查看工作区成员 | 是 | 是 | 是 | 是 |
-| 添加成员、修改角色、移除成员 | 是 | 否 | 否 | 否 |
+| 操作                                           | 所有者 | 编辑 | 审阅者 | 只读 |
+| ---------------------------------------------- | ------ | ---- | ------ | ---- |
+| 查看作品、章节、图谱、工作流、任务事件与导出   | 是     | 是   | 是     | 是   |
+| 查看写作统计与设置目标                         | 是     | 是   | 是     | 是   |
+| 查看已删除作品                                 | 是     | 是   | 是     | 是   |
+| 查看已删除章节                                 | 是     | 是   | 否     | 否   |
+| 编辑章节、写作指南、图谱、工作流；调整章节顺序 | 是     | 是   | 否     | 否   |
+| 启动/取消/重试生成，重新生成过期提案           | 是     | 是   | 否     | 否   |
+| 移入回收站或恢复作品/章节，永久删除工作流      | 是     | 是   | 否     | 否   |
+| 应用或拒绝提案                                 | 是     | 是   | 是     | 否   |
+| 查看工作区成员                                 | 是     | 是   | 是     | 是   |
+| 添加成员、修改角色、移除成员                   | 是     | 否   | 否     | 否   |
 
 审阅者可以应用提案：审核队列面向审阅角色，且应用操作会保存被替换的正文版本并受 `expectedRevision` 乐观锁保护。
 
@@ -114,7 +116,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 请将目录放在当前用户有写入权限的位置。注册首个账户后，进入侧栏「API 设置」，添加兼容接口地址、模型和 API Key，先测试连接再保存；可填写服务商公布的输入、输出 USD / 百万 Token 价格，创作页和工作流页都可以为任务选择服务商。生成目录内的
 `Start-NovelStudio.ps1` 可独立启动或随整个目录搬移，数据库路径相对于该目录解析。
 
-本机冒烟脚本会使用临时数据库验证健康检查、SPA 路由 / 前端资源及登录后的模型设置接口，结束后清理测试数据：
+本机冒烟脚本会使用临时数据库验证健康检查、SPA 路由 / 前端资源、注册登录、工作区、作品与章节创建、正文保存、过期版本冲突、Markdown 导出、非法格式拒绝和登录后的模型设置接口，结束后清理测试数据：
 
 开发者如需手动构建，先执行 `cd frontend && npm ci && npm run build`，再执行
 `cd ../backend && go build -o novelstudio.exe ./cmd/server && go build -o novelstudio-backup.exe ./cmd/backup`。
@@ -122,23 +124,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 
 ## 环境变量
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `APP_ADDR` | `127.0.0.1:8080` | 监听地址；本机默认不暴露到局域网 |
-| `APP_ENV` | — | 设为 `production` 时强制要求 `SESSION_SECRET`，并启用安全 Cookie |
-| `DB_PATH` | `data/novel-studio.db` | SQLite 数据文件路径 |
-| `SESSION_SECRET` | 随机生成 | 会话签名密钥；生产环境必须显式设置，否则启动即报错 |
-| `SESSION_SECURE` | 跟随 `APP_ENV` | 仅在 HTTPS 下发送会话 Cookie |
-| `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | 允许的跨域来源主机（逗号分隔），同时用于 WebSocket Origin 校验 |
-| `STATIC_DIR` | `frontend/dist` | 前端构建产物目录；开发源码目录下也会回退查找 `../frontend/dist` |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
-| `LLM_API_KEY` | 空 | 仅用于把旧版单 Provider 配置导入默认服务商；新配置通过「API 设置」维护 |
-| `LLM_ENCRYPTION_KEY` | 首次保存密钥时生成 | SQLite 中 Provider API Key 的 base64url 编码 32 字节加密密钥；可由部署环境显式提供 |
-| `LLM_MODEL` | `gpt-4o-mini` | 模型名称 |
-| `LLM_TEMPERATURE` | `0.7` | 生成随机度，范围 0–2 |
-| `LLM_MAX_TOKENS` | `0` | 单次最大输出 token，`0` 表示交由模型默认值 |
-| `LLM_TIMEOUT` | `480` | 模型请求超时秒数 |
-| `CONTEXT_BUDGET_RUNES` | `12000` | 生成时注入上下文的字数预算，按近期摘要、相关图谱、未回收伏笔三份均分，某一部分超长不会占掉其他部分的额度 |
+| 变量                   | 默认值                          | 说明                                                                                                     |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `APP_ADDR`             | `127.0.0.1:8080`                | 监听地址；本机默认不暴露到局域网                                                                         |
+| `APP_ENV`              | —                               | 设为 `production` 时强制要求 `SESSION_SECRET`，并启用安全 Cookie                                         |
+| `DB_PATH`              | `data/novel-studio.db`          | SQLite 数据文件路径                                                                                      |
+| `SESSION_SECRET`       | 随机生成                        | 会话签名密钥；生产环境必须显式设置，否则启动即报错                                                       |
+| `SESSION_SECURE`       | 跟随 `APP_ENV`                  | 仅在 HTTPS 下发送会话 Cookie                                                                             |
+| `ALLOWED_ORIGINS`      | `localhost:5173,127.0.0.1:5173` | 允许的跨域来源主机（逗号分隔），同时用于 WebSocket Origin 校验                                           |
+| `STATIC_DIR`           | `frontend/dist`                 | 前端构建产物目录；开发源码目录下也会回退查找 `../frontend/dist`                                          |
+| `LLM_BASE_URL`         | `https://api.openai.com/v1`     | OpenAI 兼容接口地址                                                                                      |
+| `LLM_API_KEY`          | 空                              | 仅用于把旧版单 Provider 配置导入默认服务商；新配置通过「API 设置」维护                                   |
+| `LLM_ENCRYPTION_KEY`   | 首次保存密钥时生成              | SQLite 中 Provider API Key 的 base64url 编码 32 字节加密密钥；可由部署环境显式提供                       |
+| `LLM_MODEL`            | `gpt-4o-mini`                   | 模型名称                                                                                                 |
+| `LLM_TEMPERATURE`      | `0.7`                           | 生成随机度，范围 0–2                                                                                     |
+| `LLM_MAX_TOKENS`       | `0`                             | 单次最大输出 token，`0` 表示交由模型默认值                                                               |
+| `LLM_TIMEOUT`          | `480`                           | 模型请求超时秒数                                                                                         |
+| `CONTEXT_BUDGET_RUNES` | `12000`                         | 生成时注入上下文的字数预算，按近期摘要、相关图谱、未回收伏笔三份均分，某一部分超长不会占掉其他部分的额度 |
 
 完整示例见 [`backend/.env.example`](backend/.env.example)。
 旧版模型参数用于首次导入默认服务商。之后的 Provider 配置写入 SQLite；只有本机首个注册账户可以新增、修改、删除、设为默认或测试连接，其他账户仍可在创作任务中选择已配置的 Provider。
@@ -161,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 
 ```bash
 cd backend && go vet ./... && go test ./...
-cd frontend && npm test && npm run lint && npm run format:check && npm run build
+cd frontend && npm run check
 ```
 
 GitHub Actions 会在 push 和 pull request 上运行相同的后端检查，以及前端测试、ESLint、Prettier 和生产构建。
@@ -179,21 +181,26 @@ GitHub Actions 会在 push 和 pull request 上运行相同的后端检查，以
 
 ## 主要 API
 
+章节编辑器支持专注写作模式；`Ctrl/Cmd + Shift + Enter` 切换，`Escape` 退出，`Ctrl/Cmd + S` 保存当前章节。专注模式偏好仅保存在当前浏览器会话中。
+
 所有接口以 `/api/v1` 为前缀，除注册/登录外均需登录会话。
 
 - `POST /auth/register`、`POST /auth/login`、`POST /auth/logout`、`GET /me`
-- `GET|POST /novels`、`GET|PUT /novels/{id}`（含 `writingGuide`）
-- `GET /novels/{id}/export?format=txt|md`（按章节顺序导出未删除章节；只读及以上角色可下载）
+- `GET|POST /novels`、`GET|PUT /novels/{id}`（含 `writingGuide`、作品默认 `providerId`）
+- `GET /novels/{id}/export?format=txt|md|epub|docx`（按章节顺序导出未删除章节；只读及以上角色可下载）
+- `GET /novels/{id}/search?q=关键词&limit=20`（搜索章节标题、正文和设定字段；`limit` 范围为 1-100）
+- `GET|POST /novels/{id}/references`、`GET /novels/{id}/references/search?q=关键词`、`DELETE /novels/{id}/references/{documentID}`（导入、按分段检索和删除参考文本；相关片段可注入后续生成上下文）
 - `GET /novels/trash`、`DELETE /novels/{id}`、`POST /novels/{id}/restore`
 - `GET|POST /novels/{id}/chapters`、`PUT|DELETE /novels/{id}/chapters/{chapterID}`、`PUT /novels/{id}/chapters/order`（更新使用 `expectedRevision`，并可传 `expectedUpdatedAt` 检测蓝图并发修改）
 - `POST /novels/{id}/chapters/{chapterID}/memory/refresh`（基于当前正文重建该章记忆；只允许所有者 / 编辑，需配置真实模型）
 - `GET /novels/{id}/chapters/trash`、`POST /novels/{id}/chapters/{chapterID}/restore`
 - `GET /novels/{id}/chapters/{chapterID}/revisions`、`POST .../revisions/{revision}/restore`
 - `GET /novels/{id}/graph`、`POST /novels/{id}/graph/nodes`、`PUT|DELETE /novels/{id}/graph/nodes/{nodeID}`、`PUT .../graph/nodes/{nodeID}/states`、`DELETE .../graph/nodes/{nodeID}/states/{stateID}`、`POST /novels/{id}/graph/edges`、`PUT|DELETE /novels/{id}/graph/edges/{edgeID}`
-- `GET|POST /novels/{id}/workflows`、`PUT|DELETE /novels/{id}/workflows/{workflowID}`、`POST .../run`
-- `GET /settings/llm/providers`、`POST /settings/llm/providers`、`PUT|DELETE /settings/llm/providers/{providerID}`、`PUT .../{providerID}/default`、`POST /settings/llm/providers/test`（登录后查看；仅首个账户可管理 / 测试）
+- `GET|POST /novels/{id}/workflows`、`PUT|DELETE /novels/{id}/workflows/{workflowID}`、`POST .../run`（生成 / 审核节点可单独指定 `providerId`）
+- `GET /settings/llm/providers`、`POST /settings/llm/providers`、`PUT|DELETE /settings/llm/providers/{providerID}`、`PUT .../{providerID}/default`、`POST /settings/llm/providers/test`、`GET .../{providerID}/models`（设置页可读取模型并填充候选项；登录后查看；涉及 Provider 请求的操作仅首个账户可执行）
 - `GET|PUT /settings/llm`、`POST /settings/llm/test`（兼容旧单 Provider 设置入口）
 - `GET /admin/usage`（仅本机首个账户；汇总任务、作品和用户的模型 Token 与费用）
+- `GET /novels/{id}/stats?days=30`、`GET|PUT /novels/{id}/goal`（查看最近 N 天的每日写作统计与设置每日字数目标）
 - `POST /novels/{id}/tasks/batch`（可传 `providerId`）、`POST .../workflows/{workflowID}/run`（可传 `providerId`）、`GET /novels/{id}/tasks`、`GET /tasks/{taskID}`
 - `GET /tasks/{taskID}/events`、`GET /tasks/{taskID}/ws`（WebSocket）、`POST /tasks/{taskID}/cancel|retry`
 - `GET /novels/{id}/proposals`、`POST .../proposals/{proposalID}/apply|reject`（`apply` 空请求体表示应用整份提案；也可传 `{"selectedHunks":[0,2],"applyTitle":true}` 只采纳差异视图中选中的段落组，并可单独选择标题）

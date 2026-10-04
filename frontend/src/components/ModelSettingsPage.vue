@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, type ModelProvider, type ModelProviderInput } from '../api'
 
 const emit = defineEmits<{ providersUpdated: [] }>()
@@ -25,6 +25,29 @@ const saving = ref(false)
 const testing = ref(false)
 const error = ref('')
 const notice = ref('')
+const availableModels = ref<string[]>([])
+
+const formDirty = computed(() => {
+  if (!saved.value) return Boolean(form.value.name.trim() || form.value.apiKey || form.value.clearApiKey)
+  return (
+    form.value.name.trim() !== saved.value.name ||
+    form.value.baseUrl.trim() !== saved.value.baseUrl ||
+    form.value.model.trim() !== saved.value.model ||
+    Number(form.value.temperature) !== saved.value.temperature ||
+    Number(form.value.maxTokens) !== saved.value.maxTokens ||
+    Number(form.value.timeoutSec) !== saved.value.timeoutSec ||
+    Number(form.value.inputCostPerMillion) !== saved.value.inputCostPerMillion ||
+    Number(form.value.outputCostPerMillion) !== saved.value.outputCostPerMillion ||
+    Boolean(form.value.apiKey) ||
+    form.value.clearApiKey
+  )
+})
+
+function preventLossOfModelSettings(event: BeforeUnloadEvent) {
+  if (!formDirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 
 const canTest = computed(
   () =>
@@ -50,6 +73,7 @@ function syncForm(provider: ModelProvider) {
     apiKey: '',
     clearApiKey: false,
   }
+  availableModels.value = []
 }
 
 async function refreshProviders() {
@@ -77,7 +101,8 @@ async function loadSettings() {
   }
 }
 
-function startNewProvider() {
+function startNewProvider(force: boolean | MouseEvent = false) {
+  if (force !== true && formDirty.value && !window.confirm('当前模型设置尚未保存，确定放弃这些修改吗？')) return
   selectedProviderId.value = ''
   saved.value = null
   const base = providers.value.find((provider) => provider.id === defaultProviderId.value)
@@ -98,7 +123,13 @@ function startNewProvider() {
 }
 
 function selectProvider(event: Event) {
-  const id = (event.target as HTMLSelectElement).value
+  const select = event.target as HTMLSelectElement
+  const id = select.value
+  if (id === selectedProviderId.value) return
+  if (formDirty.value && !window.confirm('当前模型设置尚未保存，确定切换服务商并放弃这些修改吗？')) {
+    select.value = selectedProviderId.value
+    return
+  }
   const provider = providers.value.find((item) => item.id === id)
   if (provider) syncForm(provider)
 }
@@ -106,6 +137,15 @@ function selectProvider(event: Event) {
 function onApiKeyInput() {
   form.value.clearApiKey = false
   notice.value = ''
+}
+
+function resetSettings() {
+  if (!formDirty.value) return
+  if (!window.confirm('确定撤销当前未保存的模型设置吗？')) return
+  if (saved.value) syncForm(saved.value)
+  else startNewProvider(true)
+  notice.value = ''
+  error.value = ''
 }
 
 function requestSettings(): ModelProviderInput {
@@ -159,6 +199,22 @@ async function testConnection() {
   }
 }
 
+async function loadModels() {
+  if (!canManage.value || !selectedProviderId.value || testing.value) return
+  testing.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await api.providerModels(selectedProviderId.value)
+    availableModels.value = result.models.map((model) => model.id)
+    notice.value = `已读取 ${availableModels.value.length} 个可用模型`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '读取模型列表失败'
+  } finally {
+    testing.value = false
+  }
+}
+
 async function setDefault() {
   if (!canManage.value || !selectedProviderId.value) return
   saving.value = true
@@ -198,7 +254,11 @@ async function deleteProvider() {
   }
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  window.addEventListener('beforeunload', preventLossOfModelSettings)
+  loadSettings()
+})
+onBeforeUnmount(() => window.removeEventListener('beforeunload', preventLossOfModelSettings))
 </script>
 
 <template>
@@ -215,7 +275,7 @@ onMounted(loadSettings)
     </div>
 
     <div class="model-settings-layout">
-      <form class="model-form-card" @submit.prevent="saveSettings">
+      <form class="model-form-card" :aria-busy="loading" @submit.prevent="saveSettings">
         <div class="model-form-heading">
           <div>
             <span class="eyebrow">MODEL PROVIDERS / {{ providers.length.toString().padStart(2, '0') }}</span>
@@ -238,7 +298,13 @@ onMounted(loadSettings)
           <div class="model-fields">
             <label class="model-field field-wide">
               <span>服务商名称</span>
-              <input v-model="form.name" required maxlength="80" :disabled="!canManage" placeholder="例如：写作主模型" />
+              <input
+                v-model="form.name"
+                required
+                maxlength="80"
+                :disabled="!canManage"
+                placeholder="例如：写作主模型"
+              />
             </label>
             <label class="model-field field-wide">
               <span>API 基础地址</span>
@@ -256,12 +322,26 @@ onMounted(loadSettings)
               <span>模型名称</span>
               <input
                 v-model="form.model"
+                list="available-models"
                 required
                 maxlength="200"
                 :disabled="!canManage"
                 placeholder="例如：gpt-4o-mini"
                 autocomplete="off"
               />
+              <datalist id="available-models">
+                <option v-for="model in availableModels" :key="model" :value="model" />
+              </datalist>
+              <small>兼容服务商支持 `/models` 时可读取候选项；读取失败仍可手动填写模型名称。</small>
+              <button
+                v-if="saved && canManage"
+                class="button secondary"
+                type="button"
+                :disabled="testing || saving"
+                @click="loadModels"
+              >
+                读取模型
+              </button>
             </label>
             <label class="model-field field-wide">
               <span>API Key</span>
@@ -346,7 +426,8 @@ onMounted(loadSettings)
               />
             </label>
             <p class="model-price-note field-wide">
-              按服务商公布的美元 / 百万 Token 单价填写。两项都为 0 时费用显示为未配置；没有返回 usage 的兼容服务商会按文本长度估算 Token。
+              按服务商公布的美元 / 百万 Token 单价填写。两项都为 0 时费用显示为未配置；没有返回 usage
+              的兼容服务商会按文本长度估算 Token。
             </p>
           </div>
 
@@ -354,22 +435,36 @@ onMounted(loadSettings)
             <p v-if="!canManage" class="model-feedback">只有本机首个注册账户可以修改此共享设置。</p>
             <p v-else-if="error" class="model-feedback is-error" role="alert">{{ error }}</p>
             <p v-else-if="notice" class="model-feedback is-success" role="status">{{ notice }}</p>
+            <p v-else-if="formDirty" class="model-feedback">存在未保存的模型设置修改。</p>
             <p v-else class="model-feedback">配置保存在本机数据库中，新任务启动时会固定使用所选服务商。</p>
             <div class="model-actions">
+              <button
+                v-if="canManage && formDirty"
+                class="button secondary"
+                type="button"
+                :disabled="saving || testing"
+                @click="resetSettings"
+              >
+                撤销修改
+              </button>
               <button
                 v-if="canManage && saved && !saved.isDefault"
                 class="button secondary"
                 type="button"
                 :disabled="saving || testing"
                 @click="setDefault"
-              >设为默认</button>
+              >
+                设为默认
+              </button>
               <button
                 v-if="canManage && saved && providers.length > 1"
                 class="button secondary"
                 type="button"
                 :disabled="saving || testing"
                 @click="deleteProvider"
-              >删除</button>
+              >
+                删除
+              </button>
               <button
                 v-if="canManage"
                 class="button secondary"
@@ -379,7 +474,12 @@ onMounted(loadSettings)
               >
                 {{ testing ? '正在测试…' : '测试连接' }}
               </button>
-              <button v-if="canManage" class="button primary" type="submit" :disabled="saving || testing">
+              <button
+                v-if="canManage"
+                class="button primary"
+                type="submit"
+                :disabled="saving || testing || (Boolean(saved) && !formDirty)"
+              >
                 {{ saving ? '正在保存…' : saved ? '保存设置' : '新增服务商' }}
               </button>
             </div>

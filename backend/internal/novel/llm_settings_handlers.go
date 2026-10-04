@@ -220,6 +220,36 @@ func (s *Server) testLLMProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "连接成功"})
 }
 
+func (s *Server) listLLMProviderModels(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.userID(w, r)
+	if !ok || !s.requireLocalSettingsAdmin(w, userID) {
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	catalog := s.providerCatalog(w)
+	if catalog == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	models, err := catalog.ListModels(ctx, r.PathValue("providerID"))
+	if err != nil {
+		var validationError *llm.SettingsValidationError
+		if errors.As(err, &validationError) {
+			writeError(w, http.StatusBadRequest, "INVALID_MODEL_SETTINGS", validationError.Error())
+			return
+		}
+		var userFacing interface{ UserMessage() string }
+		if errors.As(err, &userFacing) {
+			writeError(w, http.StatusBadGateway, "MODEL_CONNECTION_FAILED", userFacing.UserMessage())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "MODEL_CONNECTION_FAILED", "无法读取模型列表，请检查地址和 API Key")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
 func (s *Server) providerCatalog(w http.ResponseWriter) *llm.ProviderCatalog {
 	if s.llmRuntime == nil || s.llmRuntime.ProviderCatalog() == nil {
 		writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "多模型设置服务暂不可用")

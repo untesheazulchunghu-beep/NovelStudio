@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"novelstudio/internal/audit"
 	"novelstudio/internal/database"
 	"novelstudio/internal/task"
 )
@@ -20,6 +21,7 @@ type Novel struct {
 	PlannedChapters int    `json:"plannedChapters"`
 	ApprovalMode    string `json:"approvalMode"`
 	WritingGuide    string `json:"writingGuide"`
+	ProviderID      string `json:"providerId,omitempty"`
 	ChapterCount    int    `json:"chapterCount,omitempty"`
 	DeletedAt       string `json:"deletedAt,omitempty"`
 	CreatedAt       string `json:"createdAt"`
@@ -47,7 +49,7 @@ func (s *Server) listNovels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, COUNT(c.id), n.created_at, n.updated_at FROM novels n JOIN workspace_members wm ON wm.workspace_id = n.workspace_id LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL WHERE wm.user_id = ? AND n.deleted_at IS NULL GROUP BY n.id ORDER BY n.updated_at DESC`, userID)
+	rows, err := s.db.QueryContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, n.provider_id, COUNT(c.id), n.created_at, n.updated_at FROM novels n JOIN workspace_members wm ON wm.workspace_id = n.workspace_id LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL WHERE wm.user_id = ? AND n.deleted_at IS NULL GROUP BY n.id ORDER BY n.updated_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取小说项目失败")
 		return
@@ -56,7 +58,7 @@ func (s *Server) listNovels(w http.ResponseWriter, r *http.Request) {
 	novels := make([]Novel, 0)
 	for rows.Next() {
 		var item Novel
-		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ChapterCount, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ProviderID, &item.ChapterCount, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取小说项目失败")
 			return
 		}
@@ -74,7 +76,7 @@ func (s *Server) listDeletedNovels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, COUNT(c.id), COALESCE(n.deleted_at, ''), n.created_at, n.updated_at
+	rows, err := s.db.QueryContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, n.provider_id, COUNT(c.id), COALESCE(n.deleted_at, ''), n.created_at, n.updated_at
 		FROM novels n
 		JOIN workspace_members wm ON wm.workspace_id = n.workspace_id
 		LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL
@@ -88,7 +90,7 @@ func (s *Server) listDeletedNovels(w http.ResponseWriter, r *http.Request) {
 	novels := make([]Novel, 0)
 	for rows.Next() {
 		var item Novel
-		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ChapterCount, &item.DeletedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ProviderID, &item.ChapterCount, &item.DeletedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取已删除作品失败")
 			return
 		}
@@ -114,6 +116,7 @@ func (s *Server) createNovel(w http.ResponseWriter, r *http.Request) {
 		PlannedChapters int    `json:"plannedChapters"`
 		ApprovalMode    string `json:"approvalMode"`
 		WritingGuide    string `json:"writingGuide"`
+		ProviderID      string `json:"providerId"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -121,6 +124,7 @@ func (s *Server) createNovel(w http.ResponseWriter, r *http.Request) {
 	input.Title = strings.TrimSpace(input.Title)
 	input.ApprovalMode = normalizeApprovalMode(input.ApprovalMode)
 	input.WritingGuide = strings.TrimSpace(input.WritingGuide)
+	input.ProviderID = strings.TrimSpace(input.ProviderID)
 	if input.Title == "" || len([]rune(input.Title)) > 120 || input.PlannedChapters < 0 || input.PlannedChapters > 10000 || len([]rune(input.WritingGuide)) > 4000 {
 		writeError(w, http.StatusBadRequest, "INVALID_NOVEL", "标题不能为空且不超过 120 字，计划章节数需在 0–10000 之间，写作指南不超过 4000 字")
 		return
@@ -136,12 +140,18 @@ func (s *Server) createNovel(w http.ResponseWriter, r *http.Request) {
 	id := database.NewID()
 	chapterID := database.NewID()
 	now := database.Now()
+	if input.ProviderID != "" {
+		if _, found := s.tasks.ResolveProviderID(input.ProviderID); !found {
+			writeError(w, http.StatusBadRequest, "INVALID_MODEL_PROVIDER", "所选模型服务商不存在")
+			return
+		}
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建小说项目失败")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO novels (id, workspace_id, title, summary, genre, planned_chapters, approval_mode, writing_guide, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.WorkspaceID, input.Title, strings.TrimSpace(input.Summary), strings.TrimSpace(input.Genre), input.PlannedChapters, input.ApprovalMode, input.WritingGuide, now, now)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO novels (id, workspace_id, title, summary, genre, planned_chapters, approval_mode, writing_guide, provider_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.WorkspaceID, input.Title, strings.TrimSpace(input.Summary), strings.TrimSpace(input.Genre), input.PlannedChapters, input.ApprovalMode, input.WritingGuide, input.ProviderID, now, now)
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `INSERT INTO chapters (id, novel_id, chapter_number, title, body, revision, status, updated_at) VALUES (?, ?, 1, '第一章', '', 1, 'draft', ?)`, chapterID, id, now)
 	}
@@ -154,7 +164,7 @@ func (s *Server) createNovel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建小说项目失败")
 		return
 	}
-	writeJSON(w, http.StatusCreated, Novel{ID: id, WorkspaceID: input.WorkspaceID, Title: input.Title, Summary: input.Summary, Genre: input.Genre, PlannedChapters: input.PlannedChapters, ApprovalMode: input.ApprovalMode, WritingGuide: input.WritingGuide, ChapterCount: 1, CreatedAt: now, UpdatedAt: now})
+	writeJSON(w, http.StatusCreated, Novel{ID: id, WorkspaceID: input.WorkspaceID, Title: input.Title, Summary: input.Summary, Genre: input.Genre, PlannedChapters: input.PlannedChapters, ApprovalMode: input.ApprovalMode, WritingGuide: input.WritingGuide, ProviderID: input.ProviderID, ChapterCount: 1, CreatedAt: now, UpdatedAt: now})
 }
 
 func (s *Server) getNovel(w http.ResponseWriter, r *http.Request) {
@@ -163,8 +173,8 @@ func (s *Server) getNovel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var item Novel
-	err := s.db.QueryRowContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, COUNT(c.id), n.created_at, n.updated_at FROM novels n LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL WHERE n.id = ? AND n.deleted_at IS NULL GROUP BY n.id`, r.PathValue("novelID")).
-		Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ChapterCount, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(r.Context(), `SELECT n.id, n.workspace_id, n.title, n.summary, n.genre, n.planned_chapters, n.approval_mode, n.writing_guide, n.provider_id, COUNT(c.id), n.created_at, n.updated_at FROM novels n LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL WHERE n.id = ? AND n.deleted_at IS NULL GROUP BY n.id`, r.PathValue("novelID")).
+		Scan(&item.ID, &item.WorkspaceID, &item.Title, &item.Summary, &item.Genre, &item.PlannedChapters, &item.ApprovalMode, &item.WritingGuide, &item.ProviderID, &item.ChapterCount, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "NOVEL_NOT_FOUND", "小说不存在")
 		return
@@ -178,12 +188,13 @@ func (s *Server) updateNovel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Title           string `json:"title"`
-		Summary         string `json:"summary"`
-		Genre           string `json:"genre"`
-		PlannedChapters int    `json:"plannedChapters"`
-		ApprovalMode    string `json:"approvalMode"`
-		WritingGuide    string `json:"writingGuide"`
+		Title           string  `json:"title"`
+		Summary         string  `json:"summary"`
+		Genre           string  `json:"genre"`
+		PlannedChapters int     `json:"plannedChapters"`
+		ApprovalMode    string  `json:"approvalMode"`
+		WritingGuide    string  `json:"writingGuide"`
+		ProviderID      *string `json:"providerId"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -195,12 +206,29 @@ func (s *Server) updateNovel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_NOVEL", "标题不能为空且不超过 120 字，计划章节数需在 0–10000 之间，写作指南不超过 4000 字")
 		return
 	}
-	_, err := s.db.ExecContext(r.Context(), `UPDATE novels SET title = ?, summary = ?, genre = ?, planned_chapters = ?, approval_mode = ?, writing_guide = ?, updated_at = ? WHERE id = ?`, input.Title, strings.TrimSpace(input.Summary), strings.TrimSpace(input.Genre), input.PlannedChapters, input.ApprovalMode, input.WritingGuide, database.Now(), r.PathValue("novelID"))
+	providerID := ""
+	if input.ProviderID != nil {
+		providerID = strings.TrimSpace(*input.ProviderID)
+		if providerID != "" {
+			if _, found := s.tasks.ResolveProviderID(providerID); !found {
+				writeError(w, http.StatusBadRequest, "INVALID_MODEL_PROVIDER", "所选模型服务商不存在")
+				return
+			}
+		}
+	}
+	_, err := s.db.ExecContext(r.Context(), `UPDATE novels SET title = ?, summary = ?, genre = ?, planned_chapters = ?, approval_mode = ?, writing_guide = ?, provider_id = COALESCE(?, provider_id), updated_at = ? WHERE id = ?`, input.Title, strings.TrimSpace(input.Summary), strings.TrimSpace(input.Genre), input.PlannedChapters, input.ApprovalMode, input.WritingGuide, nullableProviderID(input.ProviderID, providerID), database.Now(), r.PathValue("novelID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存小说设置失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func nullableProviderID(value *string, normalized string) any {
+	if value == nil {
+		return nil
+	}
+	return normalized
 }
 
 func (s *Server) deleteNovel(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +246,17 @@ func (s *Server) deleteNovel(w http.ResponseWriter, r *http.Request) {
 	if s.hasActiveNovelTasks(w, r, tx, novelID) {
 		return
 	}
+	var title string
+	var chapterCount int
+	err = tx.QueryRowContext(r.Context(), `SELECT n.title, COUNT(c.id) FROM novels n LEFT JOIN chapters c ON c.novel_id = n.id AND c.deleted_at IS NULL WHERE n.id = ? AND n.deleted_at IS NULL GROUP BY n.id`, novelID).Scan(&title, &chapterCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "NOVEL_NOT_FOUND", "小说不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取小说信息失败")
+		return
+	}
 	now := database.Now()
 	result, err := tx.ExecContext(r.Context(), `UPDATE novels SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, now, now, novelID)
 	if err != nil {
@@ -226,6 +265,13 @@ func (s *Server) deleteNovel(w http.ResponseWriter, r *http.Request) {
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
 		writeError(w, http.StatusNotFound, "NOVEL_NOT_FOUND", "小说不存在")
+		return
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionDeleteNovel, audit.TargetTypeNovel, novelID, map[string]interface{}{
+		"novel_title":   title,
+		"chapter_count": chapterCount,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -242,7 +288,8 @@ func (s *Server) restoreNovel(w http.ResponseWriter, r *http.Request) {
 	}
 	novelID := r.PathValue("novelID")
 	var role string
-	err := s.db.QueryRowContext(r.Context(), `SELECT wm.role FROM novels n JOIN workspace_members wm ON wm.workspace_id = n.workspace_id WHERE n.id = ? AND n.deleted_at IS NOT NULL AND wm.user_id = ?`, novelID, userID).Scan(&role)
+	var title string
+	err := s.db.QueryRowContext(r.Context(), `SELECT wm.role, n.title FROM novels n JOIN workspace_members wm ON wm.workspace_id = n.workspace_id WHERE n.id = ? AND n.deleted_at IS NOT NULL AND wm.user_id = ?`, novelID, userID).Scan(&role, &title)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "NOVEL_NOT_FOUND", "已删除的小说不存在")
 		return
@@ -255,8 +302,24 @@ func (s *Server) restoreNovel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "FORBIDDEN", "当前角色不能恢复小说")
 		return
 	}
-	_, err = s.db.ExecContext(r.Context(), `UPDATE novels SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`, database.Now(), novelID)
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复小说失败")
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(r.Context(), `UPDATE novels SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`, database.Now(), novelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复小说失败")
+		return
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionRestoreNovel, audit.TargetTypeNovel, novelID, map[string]interface{}{
+		"novel_title": title,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复小说失败")
 		return
 	}
@@ -291,6 +354,81 @@ func (s *Server) listChapters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"chapters": chapters})
+}
+
+func (s *Server) searchNovel(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.userID(w, r)
+	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor", "reviewer", "viewer") {
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(query)) < 2 || len([]rune(query)) > 100 {
+		writeError(w, http.StatusBadRequest, "INVALID_QUERY", "搜索词长度必须为 2 到 100 个字符")
+		return
+	}
+	limit := 20
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "INVALID_LIMIT", "搜索结果数量必须为 1 到 100")
+			return
+		}
+		limit = parsed
+	}
+	ftsQuery := quoteFTSQuery(query)
+	var rows *sql.Rows
+	var err error
+	if !containsHan(query) {
+		rows, err = s.db.QueryContext(r.Context(), `
+		SELECT c.id, c.novel_id, c.chapter_number, c.title, c.body, c.revision, c.status, c.goal, c.key_events, c.suspense_hook, c.updated_at
+		FROM chapters_fts f JOIN chapters c ON c.rowid = f.rowid
+		WHERE c.novel_id = ? AND c.deleted_at IS NULL AND chapters_fts MATCH ?
+		ORDER BY c.chapter_number ASC
+		LIMIT ?`, r.PathValue("novelID"), ftsQuery, limit)
+	}
+	if err != nil {
+		escapedQuery := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+		pattern := "%" + escapedQuery + "%"
+		rows, err = s.db.QueryContext(r.Context(), `
+		SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at
+		FROM chapters
+		WHERE novel_id = ? AND deleted_at IS NULL AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR goal LIKE ? ESCAPE '\' OR key_events LIKE ? ESCAPE '\' OR suspense_hook LIKE ? ESCAPE '\')
+		ORDER BY chapter_number ASC
+		LIMIT ?`, r.PathValue("novelID"), pattern, pattern, pattern, pattern, pattern, limit)
+	}
+	if rows == nil {
+		escapedQuery := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+		pattern := "%" + escapedQuery + "%"
+		rows, err = s.db.QueryContext(r.Context(), `SELECT id, novel_id, chapter_number, title, body, revision, status, goal, key_events, suspense_hook, updated_at FROM chapters WHERE novel_id = ? AND deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR goal LIKE ? ESCAPE '\\' OR key_events LIKE ? ESCAPE '\\' OR suspense_hook LIKE ? ESCAPE '\\') ORDER BY chapter_number ASC LIMIT ?`, r.PathValue("novelID"), pattern, pattern, pattern, pattern, pattern, limit)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "搜索章节失败")
+		return
+	}
+	defer rows.Close()
+	chapters := make([]Chapter, 0)
+	for rows.Next() {
+		var chapter Chapter
+		if err := rows.Scan(&chapter.ID, &chapter.NovelID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision, &chapter.Status, &chapter.Goal, &chapter.KeyEvents, &chapter.SuspenseHook, &chapter.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取搜索结果失败")
+			return
+		}
+		chapters = append(chapters, chapter)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取搜索结果失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"query": query, "chapters": chapters})
+}
+
+func containsHan(value string) bool {
+	for _, char := range value {
+		if char >= '\u3400' && char <= '\u9fff' {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) listDeletedChapters(w http.ResponseWriter, r *http.Request) {
@@ -460,6 +598,7 @@ func (s *Server) reorderChapters(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteChapter(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
 	novelID := r.PathValue("novelID")
+	chapterID := r.PathValue("chapterID")
 	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
 		return
 	}
@@ -472,8 +611,19 @@ func (s *Server) deleteChapter(w http.ResponseWriter, r *http.Request) {
 	if s.hasActiveNovelTasks(w, r, tx, novelID) {
 		return
 	}
+	var chapterNumber int
+	var title string
+	err = tx.QueryRowContext(r.Context(), `SELECT chapter_number, title FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).Scan(&chapterNumber, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节信息失败")
+		return
+	}
 	now := database.Now()
-	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = ?, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, now, now, r.PathValue("chapterID"), novelID)
+	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = ?, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, now, now, chapterID, novelID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "移入回收站失败")
 		return
@@ -486,6 +636,13 @@ func (s *Server) deleteChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
 		return
 	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionDeleteChapter, audit.TargetTypeChapter, chapterID, map[string]interface{}{
+		"chapter_number": chapterNumber,
+		"chapter_title":  title,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "移入回收站失败")
 		return
@@ -495,7 +652,9 @@ func (s *Server) deleteChapter(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) restoreChapter(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
-	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor") {
+	novelID := r.PathValue("novelID")
+	chapterID := r.PathValue("chapterID")
+	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
@@ -504,7 +663,18 @@ func (s *Server) restoreChapter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = NULL, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NOT NULL`, database.Now(), r.PathValue("chapterID"), r.PathValue("novelID"))
+	var chapterNumber int
+	var title string
+	err = tx.QueryRowContext(r.Context(), `SELECT chapter_number, title FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NOT NULL`, chapterID, novelID).Scan(&chapterNumber, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "已删除的章节不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节信息失败")
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `UPDATE chapters SET deleted_at = NULL, updated_at = ? WHERE id = ? AND novel_id = ? AND deleted_at IS NOT NULL`, database.Now(), chapterID, novelID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "恢复章节失败")
 		return
@@ -518,8 +688,15 @@ func (s *Server) restoreChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "已删除的章节不存在")
 		return
 	}
-	if err := task.RebuildNarrativeThreads(r.Context(), tx, r.PathValue("novelID")); err != nil {
+	if err := task.RebuildNarrativeThreads(r.Context(), tx, novelID); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新章节记忆状态失败")
+		return
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionRestoreChapter, audit.TargetTypeChapter, chapterID, map[string]interface{}{
+		"chapter_number": chapterNumber,
+		"chapter_title":  title,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -670,6 +847,15 @@ func (s *Server) updateChapter(w http.ResponseWriter, r *http.Request) {
 		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取已保存章节失败")
 		return
+	}
+	if bodyChanged {
+		oldWordCount := countWords(current.Body)
+		newWordCount := countWords(chapter.Body)
+		if err := s.updateWritingStats(tx, current.NovelID, oldWordCount, newWordCount); err != nil {
+			tx.Rollback()
+			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新写作统计失败")
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节失败")

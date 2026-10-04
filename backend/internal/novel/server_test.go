@@ -1,6 +1,7 @@
 package novel
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -71,7 +72,7 @@ func TestExportNovelTextAndMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application := NewServer(db, auth.NewSessions([]byte("test-session-secret-that-is-long-enough"), false), manager, nil, "")
+	application := NewServer(db, auth.NewSessions([]byte("test-session-secret-that-is-long-enough"), false), manager, []string{"*"}, "")
 	webServer := newTLSServer(t, application.Handler())
 	defer webServer.Close()
 
@@ -97,7 +98,23 @@ func TestExportNovelTextAndMarkdown(t *testing.T) {
 	}, http.StatusOK)
 
 	requestJSON(t, ownerClient, http.MethodGet, webServer.URL+"/api/v1/novels/"+novelID+"/export?format=pdf", nil, http.StatusBadRequest)
-	requestJSON(t, ownerClient, http.MethodGet, webServer.URL+"/api/v1/novels/"+novelID+"/export?format=docx", nil, http.StatusBadRequest)
+	docx := exportNovel(t, ownerClient, webServer.URL, novelID, "docx")
+	if docx.contentType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("docx content type = %q", docx.contentType)
+	}
+	doc, err := zip.NewReader(bytes.NewReader(docx.body), int64(len(docx.body)))
+	if err != nil {
+		t.Fatalf("invalid docx archive: %v", err)
+	}
+	docEntries := map[string]bool{}
+	for _, entry := range doc.File {
+		docEntries[entry.Name] = true
+	}
+	for _, name := range []string{"[Content_Types].xml", "_rels/.rels", "word/document.xml"} {
+		if !docEntries[name] {
+			t.Fatalf("docx missing %s", name)
+		}
+	}
 
 	markdown := exportNovel(t, ownerClient, webServer.URL, novelID, "md")
 	if markdown.contentType != "text/markdown; charset=utf-8" {
@@ -106,6 +123,23 @@ func TestExportNovelTextAndMarkdown(t *testing.T) {
 	plain := exportNovel(t, ownerClient, webServer.URL, novelID, "txt")
 	if plain.contentType != "text/plain; charset=utf-8" {
 		t.Fatalf("text content type = %q", plain.contentType)
+	}
+	epub := exportNovel(t, ownerClient, webServer.URL, novelID, "epub")
+	if epub.contentType != "application/epub+zip" {
+		t.Fatalf("epub content type = %q", epub.contentType)
+	}
+	book, err := zip.NewReader(bytes.NewReader(epub.body), int64(len(epub.body)))
+	if err != nil {
+		t.Fatalf("invalid epub archive: %v", err)
+	}
+	entries := map[string]bool{}
+	for _, entry := range book.File {
+		entries[entry.Name] = true
+	}
+	for _, name := range []string{"mimetype", "META-INF/container.xml", "OEBPS/content.opf", "OEBPS/nav.xhtml"} {
+		if !entries[name] {
+			t.Fatalf("epub missing %s", name)
+		}
 	}
 	wantMarkdown := "# 雾港来信\n\n## 第1章 来信\n\n信纸上写着沈知遥。\n\n## 第3章 灯塔\n\n潮水拍打石阶。\n\n"
 	wantText := "雾港来信\r\n\r\n第1章 来信\r\n\r\n信纸上写着沈知遥。\r\n\r\n第3章 灯塔\r\n\r\n潮水拍打石阶。\r\n\r\n"
@@ -182,14 +216,18 @@ func TestSaaSNovelAuthoringFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
 	manager, err := task.NewManager(db, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	application := NewServer(db, auth.NewSessions([]byte("test-session-secret-that-is-long-enough"), false), manager, nil, "")
+	application := NewServer(db, auth.NewSessions([]byte("test-session-secret-that-is-long-enough"), false), manager, []string{"*"}, "")
 	webServer := newTLSServer(t, application.Handler())
 	defer webServer.Close()
+	defer func() {
+		// Wait for any background tasks to finish writing to database
+		time.Sleep(50 * time.Millisecond)
+		db.Close()
+	}()
 
 	ownerClient := newClient(t, webServer)
 	requestJSON(t, ownerClient, http.MethodPost, webServer.URL+"/api/v1/auth/register", map[string]string{"email": "owner@example.test", "password": "safe-test-password-123"}, http.StatusCreated)

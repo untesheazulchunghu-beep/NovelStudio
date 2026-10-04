@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,12 @@ import (
 )
 
 func main() {
+	// Setup structured logging
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
 	settings, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -49,9 +56,9 @@ func main() {
 	}
 	staticDir := resolveStaticDir(settings.StaticDir, "../frontend/dist", "frontend/dist")
 	if staticDir == "" {
-		log.Printf("no frontend build found, serving API only")
+		slog.Info("no frontend build found, serving API only")
 	} else {
-		log.Printf("serving frontend from %s", staticDir)
+		slog.Info("serving frontend", "path", staticDir)
 	}
 	application := novel.NewServer(db, auth.NewSessions(settings.SessionSecret, settings.SessionSecure), manager, settings.AllowedOrigins, staticDir)
 	application.SetLLMRuntime(modelRuntime)
@@ -66,16 +73,23 @@ func main() {
 	defer stop()
 	go func() {
 		<-shutdown.Done()
+		slog.Info("shutdown signal received, stopping server")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("server shutdown failed: %v", err)
+			slog.Error("server shutdown failed", "error", err)
 		}
 	}()
-	log.Printf("novel studio backend listening on %s", settings.Addr)
+	slog.Info("novel studio backend listening", "addr", settings.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	shutdownTasks, cancelTasks := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelTasks()
+	if err := manager.Shutdown(shutdownTasks); err != nil {
+		slog.Error("task manager shutdown failed", "error", err)
+	}
+	slog.Info("server stopped gracefully")
 }
 
 func resolveStaticDir(candidates ...string) string {

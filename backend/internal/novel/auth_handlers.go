@@ -281,3 +281,44 @@ func (s *Server) requireWorkspaceOwner(w http.ResponseWriter, r *http.Request, w
 func validAssignableRole(role string) bool {
 	return role == "editor" || role == "reviewer" || role == "viewer"
 }
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.userID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		OldPassword string `json:"oldPassword"`
+		NewPassword string `json:"newPassword"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if len(input.NewPassword) < 10 || len(input.NewPassword) > 72 {
+		writeError(w, http.StatusBadRequest, "INVALID_PASSWORD", "新密码长度必须为 10–72 位")
+		return
+	}
+	var currentHash string
+	var sessionVersion int64
+	if err := s.db.QueryRowContext(r.Context(), `SELECT password_hash, session_version FROM users WHERE id = ?`, userID).Scan(&currentHash, &sessionVersion); err != nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "账户不存在")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(input.OldPassword)); err != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_PASSWORD", "当前密码不正确")
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "AUTH_ERROR", "修改密码失败")
+		return
+	}
+	sessionVersion++
+	_, err = s.db.ExecContext(r.Context(), `UPDATE users SET password_hash = ?, session_version = ? WHERE id = ?`, string(newHash), sessionVersion, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "修改密码失败")
+		return
+	}
+	s.sessions.SetVersion(w, userID, sessionVersion)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,6 +40,44 @@ type Proposal struct {
 	CreatedAt     string `json:"createdAt"`
 }
 
+func (s *Server) referenceContext(ctx context.Context, novelID, instruction string) (string, []string) {
+	query := strings.TrimSpace(instruction)
+	if len([]rune(query)) > 100 {
+		query = string([]rune(query)[:100])
+	}
+	if len([]rune(query)) < 2 {
+		return "", nil
+	}
+	var rows *sql.Rows
+	var err error
+	if containsHan(query) {
+		pattern := "%" + escapeLike(query) + "%"
+		rows, err = s.db.QueryContext(ctx, `SELECT d.title, c.chunk_number, c.content FROM reference_chunks c JOIN reference_documents d ON d.id = c.document_id WHERE d.novel_id = ? AND c.content LIKE ? ESCAPE '\' ORDER BY c.chunk_number LIMIT 4`, novelID, pattern)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT d.title, c.chunk_number, c.content FROM reference_chunks_fts f JOIN reference_chunks c ON c.rowid = f.rowid JOIN reference_documents d ON d.id = c.document_id WHERE d.novel_id = ? AND reference_chunks_fts MATCH ? ORDER BY bm25(reference_chunks_fts) LIMIT 4`, novelID, quoteFTSQuery(query))
+		if err != nil {
+			pattern := "%" + escapeLike(query) + "%"
+			rows, err = s.db.QueryContext(ctx, `SELECT d.title, c.chunk_number, c.content FROM reference_chunks c JOIN reference_documents d ON d.id = c.document_id WHERE d.novel_id = ? AND c.content LIKE ? ESCAPE '\' ORDER BY c.chunk_number LIMIT 4`, novelID, pattern)
+		}
+	}
+	if err != nil {
+		return "", nil
+	}
+	defer rows.Close()
+	var output strings.Builder
+	labels := make([]string, 0, 4)
+	for rows.Next() {
+		var title, content string
+		var number int
+		if rows.Scan(&title, &number, &content) != nil {
+			continue
+		}
+		output.WriteString("[" + title + " / chunk " + strconv.Itoa(number) + "]\n" + content + "\n")
+		labels = append(labels, "Reference: "+title+" / chunk "+strconv.Itoa(number))
+	}
+	return strings.TrimSpace(output.String()), labels
+}
+
 func (s *Server) createBatchTask(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
 	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor") {
@@ -48,26 +87,12 @@ func (s *Server) createBatchTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	providerID, exists := s.tasks.ResolveProviderID(input.ProviderID)
-	if !exists {
-		writeError(w, http.StatusBadRequest, "INVALID_MODEL_PROVIDER", "所选模型服务商不存在")
-		return
-	}
-	input.ProviderID = providerID
 	kind := "batch"
 	switch strings.TrimSpace(input.Kind) {
 	case "", "batch":
 	case "review":
-		if s.tasks.DemoModeFor(input.ProviderID) {
-			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再生成关键事件审稿清单")
-			return
-		}
 		kind = "review"
 	case "continuity":
-		if s.tasks.DemoModeFor(input.ProviderID) {
-			writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再启动连续性检查")
-			return
-		}
 		kind = "continuity"
 	default:
 		writeError(w, http.StatusBadRequest, "INVALID_TASK", "未知的任务类型")
@@ -88,13 +113,10 @@ func (s *Server) refreshChapterMemory(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
 		return
 	}
-	if s.tasks.DemoMode() {
-		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再刷新章节记忆")
-		return
-	}
 	var chapter task.Chapter
-	err := s.db.QueryRowContext(r.Context(), `SELECT id, chapter_number, title, body, revision FROM chapters WHERE id = ? AND novel_id = ? AND deleted_at IS NULL`, chapterID, novelID).
-		Scan(&chapter.ID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision)
+	var providerID string
+	err := s.db.QueryRowContext(r.Context(), `SELECT c.id, c.chapter_number, c.title, c.body, c.revision, n.provider_id FROM chapters c JOIN novels n ON n.id = c.novel_id WHERE c.id = ? AND c.novel_id = ? AND c.deleted_at IS NULL AND n.deleted_at IS NULL`, chapterID, novelID).
+		Scan(&chapter.ID, &chapter.Number, &chapter.Title, &chapter.Body, &chapter.Revision, &providerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "CHAPTER_NOT_FOUND", "章节不存在")
 		return
@@ -103,11 +125,15 @@ func (s *Server) refreshChapterMemory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "读取章节失败")
 		return
 	}
+	if s.tasks.DemoModeFor(providerID) {
+		writeError(w, http.StatusServiceUnavailable, "MODEL_NOT_CONFIGURED", "请先配置真实模型，再刷新章节记忆")
+		return
+	}
 	if strings.TrimSpace(chapter.Body) == "" {
 		writeError(w, http.StatusBadRequest, "EMPTY_CHAPTER", "章节正文为空，无需生成记忆")
 		return
 	}
-	memory, err := s.tasks.ComposeChapterMemory(r.Context(), chapter, chapter.Body)
+	memory, err := s.tasks.ComposeChapterMemoryFor(r.Context(), providerID, chapter, chapter.Body)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "MEMORY_GENERATION_FAILED", "生成章节记忆失败，请稍后重试")
 		return
@@ -163,7 +189,14 @@ func (s *Server) runWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Nodes = make([]task.WorkflowNode, len(ordered))
 	for index, node := range ordered {
-		input.Nodes[index] = task.WorkflowNode{ID: node.ID, Kind: node.Kind, Title: node.Title, Prompt: node.Prompt}
+		providerID := strings.TrimSpace(node.ProviderID)
+		if providerID != "" {
+			if _, found := s.tasks.ResolveProviderID(providerID); !found {
+				writeError(w, http.StatusConflict, "MODEL_PROVIDER_UNAVAILABLE", "工作流节点引用的模型服务商已被删除")
+				return
+			}
+		}
+		input.Nodes[index] = task.WorkflowNode{ID: node.ID, Kind: node.Kind, Title: node.Title, Prompt: node.Prompt, ProviderID: providerID}
 	}
 	item, err := s.startGeneration(r.Context(), r.PathValue("novelID"), userID, input, "workflow", workflowID, name)
 	if err != nil {
@@ -180,18 +213,29 @@ type apiFailure struct {
 }
 
 func (s *Server) startGeneration(ctx context.Context, novelID, userID string, input generationInput, kind, workflowID, workflowName string) (task.Task, *apiFailure) {
-	providerID, exists := s.tasks.ResolveProviderID(input.ProviderID)
-	if !exists {
-		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_MODEL_PROVIDER", message: "所选模型服务商不存在"}
-	}
-	input.ProviderID = providerID
 	if len(input.ChapterIDs) == 0 || len(input.ChapterIDs) > 20 || len(strings.TrimSpace(input.Instruction)) == 0 || len([]rune(input.Instruction)) > 5000 {
 		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_TASK", message: "请选择 1–20 个章节，并填写不超过 5000 字的任务说明"}
 	}
 	var approvalMode string
-	var title, summary, genre, writingGuide string
-	if err := s.db.QueryRowContext(ctx, `SELECT title, summary, genre, approval_mode, writing_guide FROM novels WHERE id = ?`, novelID).Scan(&title, &summary, &genre, &approvalMode, &writingGuide); err != nil {
+	var title, summary, genre, writingGuide, novelProviderID string
+	if err := s.db.QueryRowContext(ctx, `SELECT title, summary, genre, approval_mode, writing_guide, provider_id FROM novels WHERE id = ?`, novelID).Scan(&title, &summary, &genre, &approvalMode, &writingGuide, &novelProviderID); err != nil {
 		return task.Task{}, &apiFailure{status: http.StatusNotFound, code: "NOVEL_NOT_FOUND", message: "小说不存在"}
+	}
+	requestedProvider := strings.TrimSpace(input.ProviderID)
+	if requestedProvider == "" {
+		requestedProvider = novelProviderID
+	}
+	providerID, exists := s.tasks.ResolveProviderID(requestedProvider)
+	if !exists {
+		return task.Task{}, &apiFailure{status: http.StatusBadRequest, code: "INVALID_MODEL_PROVIDER", message: "所选模型服务商不存在"}
+	}
+	input.ProviderID = providerID
+	if (kind == "review" || kind == "continuity") && s.tasks.DemoModeFor(providerID) {
+		message := "请先配置真实模型，再生成审稿结果"
+		if kind == "continuity" {
+			message = "请先配置真实模型，再启动连续性检查"
+		}
+		return task.Task{}, &apiFailure{status: http.StatusServiceUnavailable, code: "MODEL_NOT_CONFIGURED", message: message}
 	}
 	if workflowID != "" && !s.workflowExists(workflowID, novelID) {
 		return task.Task{}, &apiFailure{status: http.StatusNotFound, code: "WORKFLOW_NOT_FOUND", message: "工作流不存在"}
@@ -310,6 +354,11 @@ func (s *Server) startGeneration(ctx context.Context, novelID, userID string, in
 		}
 	}
 	header := "小说：《" + title + "》\n题材：" + genre + "\n简介：" + summary
+	referenceText, referenceLabels := s.referenceContext(ctx, novelID, input.Instruction)
+	if referenceText != "" {
+		header += "\n\nReference material excerpts:\n" + referenceText
+		contextSources = append(contextSources, referenceLabels...)
+	}
 	budget := s.contextBudgetRunes()
 	included := make([]string, 0)
 	dropped := make([]string, 0)
@@ -441,6 +490,15 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.ProviderID = providerID
+	for _, node := range request.Nodes {
+		if node.ProviderID == "" {
+			continue
+		}
+		if _, ok := s.tasks.ResolveProviderID(node.ProviderID); !ok {
+			writeError(w, http.StatusConflict, "MODEL_PROVIDER_UNAVAILABLE", "原工作流节点使用的模型服务商已被删除")
+			return
+		}
+	}
 	if (kind == "review" || kind == "continuity") && s.tasks.DemoModeFor(request.ProviderID) {
 		message := "请先配置真实模型，再重试关键事件审稿"
 		if kind == "continuity" {
@@ -636,6 +694,7 @@ func (s *Server) taskWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.origins})
 	if err != nil {
+		log.Printf("websocket accept failed: %v", err)
 		return
 	}
 	defer connection.CloseNow()
@@ -810,10 +869,10 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proposalID := r.PathValue("proposalID")
-	var chapterID, title, text, status string
+	var chapterID, title, text, status, requestJSON string
 	var baseRevision int
 	var demoMode bool
-	err := s.db.QueryRowContext(r.Context(), `SELECT chapter_id, base_revision, proposed_title, proposed_text, status, demo_mode FROM proposals WHERE id = ? AND novel_id = ?`, proposalID, novelID).Scan(&chapterID, &baseRevision, &title, &text, &status, &demoMode)
+	err := s.db.QueryRowContext(r.Context(), `SELECT p.chapter_id, p.base_revision, p.proposed_title, p.proposed_text, p.status, p.demo_mode, COALESCE(t.request_json, '') FROM proposals p LEFT JOIN tasks t ON t.id = p.task_id WHERE p.id = ? AND p.novel_id = ?`, proposalID, novelID).Scan(&chapterID, &baseRevision, &title, &text, &status, &demoMode, &requestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "提案不存在")
 		return
@@ -862,10 +921,17 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	storeMemory := !demoMode && !s.tasks.DemoMode()
+	providerID := ""
+	if requestJSON != "" {
+		var request task.Request
+		if json.Unmarshal([]byte(requestJSON), &request) == nil {
+			providerID = request.ProviderID
+		}
+	}
+	storeMemory := !demoMode && !s.tasks.DemoModeFor(providerID)
 	var memory task.ChapterMemory
 	if storeMemory {
-		memory, err = s.tasks.ComposeChapterMemory(r.Context(), task.Chapter{
+		memory, err = s.tasks.ComposeChapterMemoryFor(r.Context(), providerID, task.Chapter{
 			ID: current.ID, Number: current.Number, Title: nextTitle, Body: nextText,
 		}, nextText)
 		if err != nil {
@@ -947,6 +1013,12 @@ func (s *Server) applyProposal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "保存章节记忆失败")
 			return
 		}
+	}
+	oldWordCount := countWords(current.Body)
+	newWordCount := countWords(nextText)
+	if err := s.updateWritingStats(tx, novelID, oldWordCount, newWordCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "更新写作统计失败")
+		return
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "应用提案失败")

@@ -78,6 +78,26 @@ test('chapter saves send both revision tokens for conflict detection', async () 
   }
 })
 
+test('novel search encodes the query and uses the scoped endpoint', async () => {
+  const originalFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init }
+    return new Response(JSON.stringify({ query: '港口 信', chapters: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    const { api } = await loadTypeScriptModule('../src/api.ts')
+    await api.searchNovel('novel-1', '港口 信')
+    assert.equal(request.url, '/api/v1/novels/novel-1/search?q=%E6%B8%AF%E5%8F%A3%20%E4%BF%A1&limit=20')
+    assert.equal(request.init.credentials, 'same-origin')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('stale proposal regeneration targets the scoped endpoint', async () => {
   const originalFetch = globalThis.fetch
   let request

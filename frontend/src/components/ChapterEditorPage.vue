@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Chapter, ChapterRevision, GraphEdge, ModelProvider, Novel, NovelTask } from '../api'
 import { countManuscriptCharacters } from '../word-count'
 
@@ -15,7 +15,7 @@ const selectedChapterIds = defineModel<string[]>('selectedChapterIds', { require
 const showBlueprint = defineModel<boolean>('showBlueprint', { required: true })
 const showHistory = defineModel<boolean>('showHistory', { required: true })
 
-defineProps<{
+const props = defineProps<{
   novel: Novel
   chapters: Chapter[]
   deletedChapters: Chapter[]
@@ -38,6 +38,8 @@ defineProps<{
   savingGuide: boolean
   markdownHref: string
   textHref: string
+  epubHref: string
+  docxHref: string
   activeTaskRunning: boolean
 }>()
 
@@ -46,6 +48,7 @@ const emit = defineEmits<{
   addChapter: []
   saveChapter: []
   refreshMemory: []
+  updateDefaultProvider: [providerId: string]
   deleteNovel: []
   selectChapter: [chapterId: string]
   moveChapter: [chapterId: string, offset: -1 | 1]
@@ -63,6 +66,10 @@ const emit = defineEmits<{
   openKnowledge: []
 }>()
 
+function onDefaultProviderChange(event: Event) {
+  emit('updateDefaultProvider', (event.target as HTMLSelectElement).value)
+}
+
 const revisionSourceLabels: Record<string, string> = {
   manual: '手动编辑前',
   proposal: '提案应用前',
@@ -71,10 +78,30 @@ const revisionSourceLabels: Record<string, string> = {
 }
 
 const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
+const focusMode = ref(typeof sessionStorage !== 'undefined' && sessionStorage.getItem('novelstudio.focus-mode') === '1')
+
+watch(focusMode, (enabled) => {
+  if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('novelstudio.focus-mode', enabled ? '1' : '0')
+})
+
+function onFocusModeKeydown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault()
+    if (props.canEdit && !props.savingChapter) emit('saveChapter')
+  } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'Enter') {
+    event.preventDefault()
+    focusMode.value = !focusMode.value
+  } else if (event.key === 'Escape' && focusMode.value) {
+    focusMode.value = false
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onFocusModeKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onFocusModeKeydown))
 </script>
 
 <template>
-  <section class="page writing-page">
+  <section class="page writing-page" :class="{ 'is-focus-mode': focusMode }">
     <div class="writing-head">
       <div>
         <div class="eyebrow">MANUSCRIPT / {{ novel.genre || 'NOVEL PROJECT' }}</div>
@@ -95,8 +122,29 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
         </label>
         <a class="button secondary" :href="markdownHref" download>导出 Markdown</a>
         <a class="button secondary" :href="textHref" download>导出 TXT</a>
+        <a class="button secondary" :href="epubHref" download>导出 EPUB</a>
+        <a class="button secondary" :href="docxHref" download>导出 Word</a>
         <button v-if="canEdit" class="button secondary" @click="emit('addChapter')">＋ 新章节</button>
-        <button v-if="canEdit" class="button primary" :disabled="savingChapter" @click="emit('saveChapter')">
+        <button
+          class="button secondary focus-mode-button"
+          type="button"
+          :aria-pressed="focusMode"
+          :aria-label="focusMode ? '退出专注写作模式' : '进入专注写作模式'"
+          aria-keyshortcuts="Control+Shift+Enter Meta+Shift+Enter Escape"
+          title="Ctrl/Cmd + Shift + Enter 切换，Escape 退出"
+          @click="focusMode = !focusMode"
+        >
+          {{ focusMode ? '退出专注' : '专注写作' }}
+        </button>
+        <button
+          v-if="canEdit"
+          class="button primary"
+          title="Ctrl/Cmd + S 保存当前章节"
+          aria-label="保存当前章节"
+          aria-keyshortcuts="Control+S Meta+S"
+          :disabled="savingChapter"
+          @click="emit('saveChapter')"
+        >
           {{ savingChapter ? '保存中…' : '保存章节' }}
         </button>
       </div>
@@ -219,7 +267,7 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
             placeholder="在这里写下故事的开端……&#10;&#10;你也可以告诉右侧的创作 Agent，想要续写、润色或调整的方向。"
           ></textarea>
           <div class="manuscript-footer">
-            <span>{{ wordCount.toLocaleString() }} 字</span
+            <span aria-live="polite">{{ wordCount.toLocaleString() }} 字</span
             ><span>停止输入约 2.5 秒后自动保存；本地草稿也会同步缓存</span>
           </div>
         </div>
@@ -324,6 +372,15 @@ const wordCount = computed(() => countManuscriptCharacters(draftBody.value))
               placeholder="例如：续写主角抵达雾港后的场景，保持克制、冷峻的叙述风格……"
             ></textarea>
             <div class="assistant-options">
+              <label>
+                <span>作品默认模型</span>
+                <select :value="novel.providerId ?? ''" :disabled="!canEdit" @change="onDefaultProviderChange">
+                  <option value="">跟随全局默认</option>
+                  <option v-for="provider in providers" :key="`novel-${provider.id}`" :value="provider.id">
+                    {{ provider.name }}
+                  </option>
+                </select>
+              </label>
               <label>
                 <span>模型服务商</span>
                 <select v-model="providerId">

@@ -177,6 +177,15 @@ function removeWorkflowNode(id: string) {
             </div>
             <input v-model="node.title" :readonly="!canEdit" @pointerdown.stop />
             <textarea v-model="node.prompt" :readonly="!canEdit" rows="2" @pointerdown.stop></textarea>
+            <select
+              v-if="node.kind === 'generate' || node.kind === 'review'"
+              v-model="node.providerId"
+              :disabled="!canEdit"
+              @pointerdown.stop
+            >
+              <option value="">沿用任务模型</option>
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+            </select>
           </article>
           <div v-if="!workflowDefinition.nodes.length" class="canvas-empty">添加一个节点，搭建你的创作流程</div>
         </div>

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"novelstudio/internal/audit"
 	"novelstudio/internal/database"
 )
 
@@ -284,12 +285,13 @@ type Workflow struct {
 }
 
 type WorkflowNode struct {
-	ID     string  `json:"id"`
-	Kind   string  `json:"kind"`
-	Title  string  `json:"title"`
-	Prompt string  `json:"prompt"`
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
+	ID         string  `json:"id"`
+	Kind       string  `json:"kind"`
+	Title      string  `json:"title"`
+	Prompt     string  `json:"prompt"`
+	ProviderID string  `json:"providerId,omitempty"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
 }
 
 type WorkflowEdge struct {
@@ -334,7 +336,8 @@ func (s *Server) listWorkflows(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
-	if !ok || !s.requireNovelRole(w, r.PathValue("novelID"), userID, "owner", "editor") {
+	novelID := r.PathValue("novelID")
+	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
 		return
 	}
 	var input struct {
@@ -358,15 +361,32 @@ func (s *Server) createWorkflow(w http.ResponseWriter, r *http.Request) {
 			input.Name = input.Template
 		}
 	}
-	if input.Name == "" || len([]rune(input.Name)) > 80 || !validateWorkflow(input.Definition) {
+	if input.Name == "" || len([]rune(input.Name)) > 80 || !validateWorkflow(input.Definition) || !s.validateWorkflowProviders(input.Definition) {
 		writeError(w, http.StatusBadRequest, "INVALID_WORKFLOW", "工作流名称或节点连线无效")
 		return
 	}
 	definition, _ := json.Marshal(input.Definition)
 	now := database.Now()
-	workflow := Workflow{ID: database.NewID(), NovelID: r.PathValue("novelID"), Name: input.Name, Definition: definition, CreatedAt: now, UpdatedAt: now}
-	_, err := s.db.ExecContext(r.Context(), `INSERT INTO workflows (id, novel_id, name, definition_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, workflow.ID, workflow.NovelID, workflow.Name, string(definition), now, now)
+	workflow := Workflow{ID: database.NewID(), NovelID: novelID, Name: input.Name, Definition: definition, CreatedAt: now, UpdatedAt: now}
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建工作流失败")
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO workflows (id, novel_id, name, definition_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, workflow.ID, workflow.NovelID, workflow.Name, string(definition), now, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建工作流失败")
+		return
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionCreateWorkflow, audit.TargetTypeWorkflow, workflow.ID, map[string]interface{}{
+		"workflow_name": workflow.Name,
+		"node_count":    len(input.Definition.Nodes),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "创建工作流失败")
 		return
 	}
@@ -386,7 +406,7 @@ func (s *Server) updateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Name = strings.TrimSpace(input.Name)
-	if input.Name == "" || len([]rune(input.Name)) > 80 || !validateWorkflow(input.Definition) {
+	if input.Name == "" || len([]rune(input.Name)) > 80 || !validateWorkflow(input.Definition) || !s.validateWorkflowProviders(input.Definition) {
 		writeError(w, http.StatusBadRequest, "INVALID_WORKFLOW", "工作流名称或节点连线无效")
 		return
 	}
@@ -404,14 +424,32 @@ func (s *Server) updateWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (s *Server) validateWorkflowProviders(definition WorkflowDefinition) bool {
+	for _, node := range definition.Nodes {
+		if node.ProviderID == "" || (node.Kind != "generate" && node.Kind != "review") {
+			continue
+		}
+		if _, ok := s.tasks.ResolveProviderID(node.ProviderID); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.userID(w, r)
 	novelID, workflowID := r.PathValue("novelID"), r.PathValue("workflowID")
 	if !ok || !s.requireNovelRole(w, novelID, userID, "owner", "editor") {
 		return
 	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "删除工作流失败")
+		return
+	}
+	defer tx.Rollback()
 	var activeTasks int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM tasks WHERE workflow_id = ? AND status IN ('queued', 'running')`, workflowID).Scan(&activeTasks); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM tasks WHERE workflow_id = ? AND status IN ('queued', 'running')`, workflowID).Scan(&activeTasks); err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "检查工作流任务失败")
 		return
 	}
@@ -419,13 +457,33 @@ func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "TASKS_RUNNING", "请等待该工作流的生成任务完成后再删除")
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), `DELETE FROM workflows WHERE id = ? AND novel_id = ?`, workflowID, novelID)
+	var name string
+	var definitionJSON string
+	err = tx.QueryRowContext(r.Context(), `SELECT name, definition_json FROM workflows WHERE id = ? AND novel_id = ?`, workflowID, novelID).Scan(&name, &definitionJSON)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "WORKFLOW_NOT_FOUND", "工作流不存在")
+		return
+	}
+	var definition WorkflowDefinition
+	_ = json.Unmarshal([]byte(definitionJSON), &definition)
+	result, err := tx.ExecContext(r.Context(), `DELETE FROM workflows WHERE id = ? AND novel_id = ?`, workflowID, novelID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "删除工作流失败")
 		return
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
 		writeError(w, http.StatusNotFound, "WORKFLOW_NOT_FOUND", "工作流不存在")
+		return
+	}
+	if err := audit.LogTx(r.Context(), tx, userID, &novelID, audit.ActionDeleteWorkflow, audit.TargetTypeWorkflow, workflowID, map[string]interface{}{
+		"workflow_name": name,
+		"node_count":    len(definition.Nodes),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "记录审计日志失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "DATABASE_ERROR", "删除工作流失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

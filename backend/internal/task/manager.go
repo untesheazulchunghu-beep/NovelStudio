@@ -91,10 +91,13 @@ type Manager struct {
 	generator llm.Generator
 	mu        sync.Mutex
 	eventMu   sync.Mutex
+	wg        sync.WaitGroup
+	closed    bool
 	subs      map[string]map[chan Event]struct{}
 	cancels   map[string]context.CancelFunc
 	sequences map[string]int64
 	semaphore chan struct{}
+	userQuota *UserQuota
 }
 
 const (
@@ -153,6 +156,7 @@ func NewManager(db *sql.DB, generator llm.Generator) (*Manager, error) {
 		cancels:   make(map[string]context.CancelFunc),
 		sequences: make(map[string]int64),
 		semaphore: make(chan struct{}, 2),
+		userQuota: NewUserQuota(1),
 	}
 	rows, err = db.Query(`SELECT task_id, MAX(sequence) FROM task_events GROUP BY task_id`)
 	if err != nil {
@@ -178,9 +182,22 @@ func NewManager(db *sql.DB, generator llm.Generator) (*Manager, error) {
 func (m *Manager) Start(request Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		cancel()
+		m.finish(request.ID, "canceled", "任务管理器已关闭")
+		return
+	}
 	m.cancels[request.ID] = cancel
+	m.wg.Add(1)
 	m.mu.Unlock()
 	go func() {
+		defer m.wg.Done()
+		if !m.userQuota.TryAcquire(request.UserID) {
+			m.finish(request.ID, "failed", "用户并发任务数已达上限，请等待当前任务完成后再试")
+			return
+		}
+		defer m.userQuota.Release(request.UserID)
 		select {
 		case m.semaphore <- struct{}{}:
 			defer func() { <-m.semaphore }()
@@ -192,6 +209,32 @@ func (m *Manager) Start(request Request) {
 		delete(m.cancels, request.ID)
 		m.mu.Unlock()
 	}()
+}
+
+// Shutdown cancels all in-process tasks and waits for their database writes to
+// finish. Call it before closing the database during server shutdown.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.mu.Lock()
+	m.closed = true
+	cancels := make([]context.CancelFunc, 0, len(m.cancels))
+	for _, cancel := range m.cancels {
+		cancels = append(cancels, cancel)
+	}
+	m.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) Cancel(taskID string) bool {
@@ -368,7 +411,11 @@ func (m *Manager) run(ctx context.Context, request Request) {
 
 // ComposeChapterMemory asks the injected generator for the four memory fields.
 func (m *Manager) ComposeChapterMemory(ctx context.Context, chapter Chapter, body string) (ChapterMemory, error) {
-	raw, _, err, demoMode := m.generate(ctx, "", MemoryPrompt(chapter, body), func(string) {})
+	return m.ComposeChapterMemoryFor(ctx, "", chapter, body)
+}
+
+func (m *Manager) ComposeChapterMemoryFor(ctx context.Context, providerID string, chapter Chapter, body string) (ChapterMemory, error) {
+	raw, _, err, demoMode := m.generate(ctx, providerID, MemoryPrompt(chapter, body), func(string) {})
 	if err != nil {
 		return ChapterMemory{}, err
 	}

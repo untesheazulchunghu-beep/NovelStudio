@@ -216,6 +216,14 @@ func (c *ProviderCatalog) Provider(id string) (*Provider, RuntimeSettings, bool)
 	return profile.provider, profile.settings, ok
 }
 
+func (c *ProviderCatalog) ListModels(ctx context.Context, id string) ([]AvailableModel, error) {
+	provider, _, ok := c.Provider(id)
+	if !ok {
+		return nil, &SettingsValidationError{message: "妯″瀷鏈嶅姟鍟嗕笉瀛樺湪"}
+	}
+	return provider.ListModels(ctx)
+}
+
 func (c *ProviderCatalog) Save(id string, input ProviderProfileInput) (ProviderProfileView, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -332,14 +340,23 @@ func (c *ProviderCatalog) Delete(id string) error {
 		return &SettingsValidationError{message: "至少需要保留一个模型服务商"}
 	}
 	var inUse bool
-	needle := `"providerId":"` + id + `"`
 	if err := c.db.QueryRow(`SELECT EXISTS(
-		SELECT 1 FROM tasks WHERE status IN ('queued', 'running') AND instr(request_json, ?) > 0
-	)`, needle).Scan(&inUse); err != nil {
+		SELECT 1 FROM tasks
+		WHERE status IN ('queued', 'running')
+		  AND json_valid(request_json)
+		  AND json_extract(request_json, '$.providerId') = ?
+	)`, id).Scan(&inUse); err != nil {
 		return fmt.Errorf("check active model provider tasks: %w", err)
 	}
 	if inUse {
 		return &SettingsValidationError{message: "有正在运行的任务使用此服务商，暂时不能删除"}
+	}
+	var novelDefaultInUse bool
+	if err := c.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM novels WHERE provider_id = ?)`, id).Scan(&novelDefaultInUse); err != nil {
+		return fmt.Errorf("check novel default model provider: %w", err)
+	}
+	if novelDefaultInUse {
+		return &SettingsValidationError{message: "有作品将此服务商设为默认模型，请先切换作品设置"}
 	}
 	nextDefault := c.defaultProviderID
 	if profile.view.IsDefault {

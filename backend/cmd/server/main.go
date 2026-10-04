@@ -54,6 +54,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	manager.SetUserQuota(settings.UserTaskQuota)
 	staticDir := resolveStaticDir(settings.StaticDir, "../frontend/dist", "frontend/dist")
 	if staticDir == "" {
 		slog.Info("no frontend build found, serving API only")

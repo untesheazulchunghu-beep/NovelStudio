@@ -179,6 +179,16 @@ func NewManager(db *sql.DB, generator llm.Generator) (*Manager, error) {
 	return manager, nil
 }
 
+// SetUserQuota updates the per-user concurrent task limit.
+func (m *Manager) SetUserQuota(limit int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit < 1 {
+		limit = 1
+	}
+	m.userQuota = NewUserQuota(limit)
+}
+
 func (m *Manager) Start(request Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()

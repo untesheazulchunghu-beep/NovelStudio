@@ -141,6 +141,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `LLM_MAX_TOKENS`       | `0`                             | 单次最大输出 token，`0` 表示交由模型默认值                                                               |
 | `LLM_TIMEOUT`          | `480`                           | 模型请求超时秒数                                                                                         |
 | `CONTEXT_BUDGET_RUNES` | `12000`                         | 生成时注入上下文的字数预算，按近期摘要、相关图谱、未回收伏笔三份均分，某一部分超长不会占掉其他部分的额度 |
+| `USER_TASK_QUOTA`      | `1`                             | 每个用户的最大并发任务数，防止单用户占满全局资源                                                         |
 
 完整示例见 [`backend/.env.example`](backend/.env.example)。
 旧版模型参数用于首次导入默认服务商。之后的 Provider 配置写入 SQLite；只有本机首个注册账户可以新增、修改、删除、设为默认或测试连接，其他账户仍可在创作任务中选择已配置的 Provider。

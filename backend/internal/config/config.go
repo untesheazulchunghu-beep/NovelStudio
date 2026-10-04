@@ -28,6 +28,7 @@ type Config struct {
 	LLMMaxTokens        int
 	LLMTimeoutSec       int
 	ContextBudgetRunes  int
+	UserTaskQuota       int
 }
 
 type LLMValues struct {
@@ -117,6 +118,7 @@ func Load() (Config, error) {
 		LLMMaxTokens:        maxTokens,
 		LLMTimeoutSec:       timeout,
 		ContextBudgetRunes:  positiveIntEnv("CONTEXT_BUDGET_RUNES", defaultContextBudgetRunes),
+		UserTaskQuota:       positiveIntEnv("USER_TASK_QUOTA", 1),
 	}, nil
 }
 

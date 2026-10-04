@@ -1,0 +1,58 @@
+package canalyzer
+
+/*
+#cgo pkg-config: milvus_core
+#include <stdlib.h>	// free
+#include "segcore/tokenizer_c.h"
+#include "segcore/token_stream_c.h"
+*/
+import "C"
+
+import (
+	"unsafe"
+
+	"github.com/milvus-io/milvus/internal/util/analyzer/interfaces"
+	_ "github.com/milvus-io/milvus/internal/util/cgo"
+)
+
+var _ interfaces.Analyzer = (*CAnalyzer)(nil)
+
+type CAnalyzer struct {
+	ptr C.CTokenizer
+}
+
+func NewCAnalyzer(ptr C.CTokenizer) *CAnalyzer {
+	return &CAnalyzer{
+		ptr: ptr,
+	}
+}
+
+func (impl *CAnalyzer) NewTokenStream(text string) (interfaces.TokenStream, error) {
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+	var ptr C.CTokenStream
+	status := C.create_token_stream(impl.ptr, cText, (C.uint32_t)(len(text)), &ptr)
+	if err := HandleCStatus(&status, "failed to create token stream"); err != nil {
+		return nil, err
+	}
+	return NewCTokenStream(ptr), nil
+}
+
+func (impl *CAnalyzer) Clone() (interfaces.Analyzer, error) {
+	var newptr C.CTokenizer
+	status := C.clone_tokenizer(&impl.ptr, &newptr)
+	if err := HandleCStatus(&status, "failed to clone tokenizer"); err != nil {
+		return nil, err
+	}
+	return NewCAnalyzer(newptr), nil
+}
+
+func (impl *CAnalyzer) Destroy() {
+	C.free_tokenizer(impl.ptr)
+}
+
+// GetCPtr returns the underlying C tokenizer pointer
+// This is used for optimizations that need direct C API access
+func (impl *CAnalyzer) GetCPtr() unsafe.Pointer {
+	return unsafe.Pointer(impl.ptr)
+}

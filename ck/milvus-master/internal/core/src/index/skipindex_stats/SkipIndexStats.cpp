@@ -1,0 +1,268 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "index/skipindex_stats/SkipIndexStats.h"
+
+#include <cstdint>
+
+#include "arrow/array/array_primitive.h"
+#include "common/Span.h"
+#include "parquet/types.h"
+
+namespace milvus::index {
+
+PreparedInQuery::PreparedInQuery(std::vector<Metrics> values)
+    : values_(std::move(values)) {
+    if (values_.empty()) {
+        return;
+    }
+    std::visit(
+        [this](const auto& first) {
+            using T = MetricsDataType<std::decay_t<decltype(first)>>;
+            if constexpr (!std::is_same_v<T, bool>) {
+                const auto extract =
+                    [](const Metrics& value) -> std::optional<T> {
+                    if constexpr (std::is_same_v<T, std::string_view>) {
+                        if (auto* str = std::get_if<std::string>(&value)) {
+                            return std::string_view(*str);
+                        }
+                    }
+                    if (auto* typed = std::get_if<T>(&value)) {
+                        return *typed;
+                    }
+                    return std::nullopt;
+                };
+                // Seed from the first literal: "" is a valid bound. Preserve
+                // the existing left-to-right fold, including float NaNs.
+                T min = *extract(values_.front());
+                T max = min;
+                size_t min_index = 0;
+                size_t max_index = 0;
+                for (size_t i = 1; i < values_.size(); ++i) {
+                    auto value = extract(values_[i]);
+                    if (!value.has_value()) {
+                        return;  // Mixed numeric types keep the old fallback.
+                    }
+                    if (*value < min) {
+                        min = *value;
+                        min_index = i;
+                    }
+                    if (*value > max) {
+                        max = *value;
+                        max_index = i;
+                    }
+                }
+                // Copy owning strings rather than borrowing from values_, so
+                // copying/moving a prepared query cannot invalidate its bounds.
+                bounds_.emplace(values_[min_index], values_[max_index]);
+            }
+        },
+        values_.front());
+}
+
+std::unique_ptr<FieldChunkMetrics>
+SkipIndexStatsBuilder::Build(
+    DataType data_type,
+    const std::shared_ptr<parquet::Statistics>& statistic) const {
+    auto null_state = FieldChunkMetrics::NullState::Unknown;
+    if (statistic != nullptr && statistic->HasNullCount()) {
+        if (statistic->null_count() == 0) {
+            null_state = FieldChunkMetrics::NullState::NoNulls;
+        } else if (statistic->num_values() == 0) {
+            // With null_count present, Arrow defines num_values() as the
+            // number of non-null values.
+            null_state = FieldChunkMetrics::NullState::AllNulls;
+        } else {
+            null_state = FieldChunkMetrics::NullState::SomeNulls;
+        }
+    }
+    auto with_null_state =
+        [null_state](std::unique_ptr<FieldChunkMetrics> metrics) {
+            metrics->SetNullState(null_state);
+            return metrics;
+        };
+
+    // A row group can carry a statistics object (is_stats_set()==true) that
+    // still has no usable min/max: an all-null row group records only
+    // null_count, and Arrow omits min/max for a float row group that contains
+    // NaN (its ordering is undefined). Reading min()/max() in that state
+    // returns unset/garbage bounds, which would let the skip check prune a cell
+    // that actually holds matching rows. Treat "no min/max" as "no metric" so
+    // the chunk is never skipped (conservative, no false negative).
+    if (statistic == nullptr || !statistic->HasMinMax()) {
+        return with_null_state(std::make_unique<NoneFieldChunkMetrics>());
+    }
+    // Arrow 17's parquet writer applies the statistics size limit to min and
+    // max independently.  Its reader, however, reports HasMinMax() when either
+    // encoded bound is present.  A long VARCHAR maximum can therefore be
+    // omitted while a short minimum remains (or vice versa); decoding the
+    // missing BYTE_ARRAY bound produces an empty value and turns an incomplete
+    // range into an unsafe one.  An actual empty-string bound is
+    // indistinguishable through this API, so conservatively disable pruning in
+    // that case too.
+    if (data_type == DataType::VARCHAR &&
+        (statistic->EncodeMin().empty() || statistic->EncodeMax().empty())) {
+        return with_null_state(std::make_unique<NoneFieldChunkMetrics>());
+    }
+    std::unique_ptr<FieldChunkMetrics> chunk_metrics;
+    switch (data_type) {
+        case DataType::INT8: {
+            auto info =
+                ProcessFieldMetrics<parquet::Int32Type, int8_t>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<IntFieldChunkMetrics<int8_t>>(
+                info->min_, info->max_, nullptr);
+            break;
+        }
+        case milvus::DataType::INT16: {
+            auto info =
+                ProcessFieldMetrics<parquet::Int32Type, int16_t>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<IntFieldChunkMetrics<int16_t>>(
+                info->min_, info->max_, nullptr);
+            break;
+        }
+        case milvus::DataType::INT32: {
+            auto info =
+                ProcessFieldMetrics<parquet::Int32Type, int32_t>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<IntFieldChunkMetrics<int32_t>>(
+                info->min_, info->max_, nullptr);
+            break;
+        }
+        case milvus::DataType::INT64: {
+            auto info =
+                ProcessFieldMetrics<parquet::Int64Type, int64_t>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<IntFieldChunkMetrics<int64_t>>(
+                info->min_, info->max_, nullptr);
+            break;
+        }
+        case milvus::DataType::FLOAT: {
+            auto info =
+                ProcessFieldMetrics<parquet::FloatType, float>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<FloatFieldChunkMetrics<float>>(
+                info->min_, info->max_);
+            break;
+        }
+        case milvus::DataType::DOUBLE: {
+            auto info =
+                ProcessFieldMetrics<parquet::DoubleType, double>(statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<FloatFieldChunkMetrics<double>>(
+                info->min_, info->max_);
+            break;
+        }
+        case milvus::DataType::VARCHAR: {
+            auto info =
+                ProcessFieldMetrics<parquet::ByteArrayType, std::string>(
+                    statistic);
+            if (!info.has_value()) {
+                break;
+            }
+            chunk_metrics = std::make_unique<StringFieldChunkMetrics>(
+                std::string(info->min_),
+                std::string(info->max_),
+                nullptr,
+                nullptr);
+            break;
+        }
+        default: {
+            chunk_metrics = std::make_unique<NoneFieldChunkMetrics>();
+            break;
+        }
+    }
+    if (chunk_metrics == nullptr) {
+        // The typed-statistics cast failed: the footer's physical type does
+        // not match what `data_type` requires (mismatched or corrupt footer).
+        // Degrade exactly like the missing-min/max case above: NONE metrics
+        // never skip, so the chunk stays readable (no false negative).
+        chunk_metrics = std::make_unique<NoneFieldChunkMetrics>();
+    }
+    return with_null_state(std::move(chunk_metrics));
+}
+
+std::unique_ptr<FieldChunkMetrics>
+SkipIndexStatsBuilder::Build(
+    const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches,
+    int col_idx,
+    arrow::Type::type data_type) const {
+    auto none_ptr = std::make_unique<NoneFieldChunkMetrics>();
+    if (batches.empty()) {
+        return none_ptr;
+    }
+    switch (data_type) {
+        case arrow::Type::BOOL: {
+            metricsInfo<bool> info =
+                ProcessFieldMetrics<bool, arrow::BooleanArray>(batches,
+                                                               col_idx);
+            return LoadMetrics<bool>(info);
+        }
+        case arrow::Type::INT8: {
+            auto info =
+                ProcessFieldMetrics<int8_t, arrow::Int8Array>(batches, col_idx);
+            return LoadMetrics<int8_t>(info);
+        }
+        case arrow::Type::INT16: {
+            auto info = ProcessFieldMetrics<int16_t, arrow::Int16Array>(
+                batches, col_idx);
+            return LoadMetrics<int16_t>(info);
+        }
+        case arrow::Type::INT32: {
+            auto info = ProcessFieldMetrics<int32_t, arrow::Int32Array>(
+                batches, col_idx);
+            return LoadMetrics<int32_t>(info);
+        }
+        case arrow::Type::INT64: {
+            auto info = ProcessFieldMetrics<int64_t, arrow::Int64Array>(
+                batches, col_idx);
+            return LoadMetrics<int64_t>(info);
+        }
+        case arrow::Type::FLOAT: {
+            auto info =
+                ProcessFieldMetrics<float, arrow::FloatArray>(batches, col_idx);
+            return LoadMetrics<float>(info);
+        }
+        case arrow::Type::DOUBLE: {
+            auto info = ProcessFieldMetrics<double, arrow::DoubleArray>(
+                batches, col_idx);
+            return LoadMetrics<double>(info);
+        }
+        case arrow::Type::STRING: {
+            const metricsInfo<std::string>& info =
+                ProcessStringFieldMetrics(batches, col_idx);
+            return LoadMetrics<std::string>(info);
+        }
+        default:
+            break;
+    }
+    return none_ptr;
+}
+
+}  // namespace milvus::index

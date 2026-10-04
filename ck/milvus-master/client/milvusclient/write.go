@@ -1,0 +1,171 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package milvusclient
+
+import (
+	"context"
+	"math"
+	"time"
+
+	"github.com/cockroachdb/errors"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus/client/v3/column"
+	"github.com/milvus-io/milvus/client/v3/internal/merr"
+)
+
+// withIdempotencyKey derives a child context that carries the idempotency key
+// to the server via gRPC metadata (the "idempotency-key" header). Client.Insert
+// applies it only for a non-empty option-level key: the option then overrides
+// any existing outgoing metadata for this call, while callers that set the
+// header directly on ctx remain compatible when no option key is provided.
+func withIdempotencyKey(ctx context.Context, key string) context.Context {
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		md = metadata.New(nil)
+	} else {
+		md = md.Copy()
+	}
+	if key == "" {
+		md.Delete(idempotencyKeyHeader)
+	} else {
+		md.Set(idempotencyKeyHeader, key)
+	}
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
+type InsertResult struct {
+	InsertCount int64
+	IDs         column.Column
+}
+
+func (c *Client) Insert(ctx context.Context, option InsertOption, callOptions ...grpc.CallOption) (InsertResult, error) {
+	startTime := time.Now()
+	collectionName := option.CollectionName()
+	result := InsertResult{}
+	// Scope any non-empty option-level idempotency key onto a per-call child
+	// context. With no option key, preserve any existing outgoing metadata so
+	// callers that set the header directly remain compatible.
+	if keyed, ok := option.(interface{ IdempotencyKey() string }); ok {
+		if key := keyed.IdempotencyKey(); key != "" {
+			ctx = withIdempotencyKey(ctx, key)
+		}
+	}
+	err := c.retryIfSchemaError(ctx, collectionName, func(ctx context.Context) (uint64, error) {
+		collection, err := c.getCollection(ctx, option.CollectionName())
+		if err != nil {
+			return math.MaxUint64, err
+		}
+		req, err := option.InsertRequest(collection)
+		if err != nil {
+			// return schema mismatch err to retry with newer schema
+			return collection.UpdateTimestamp, merr.WrapErrCollectionSchemaMisMatch(err)
+		}
+
+		return collection.UpdateTimestamp, c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
+			resp, err := milvusService.Insert(ctx, req, callOptions...)
+
+			err = merr.CheckRPCCall(resp, err)
+			if err != nil {
+				return err
+			}
+
+			result.InsertCount = resp.GetInsertCnt()
+			result.IDs, err = column.IDColumns(collection.Schema, resp.GetIDs(), 0, -1)
+			if err != nil {
+				return err
+			}
+
+			// write back pks if needed
+			// pks values shall be written back to struct if receiver field exists
+			return option.WriteBackPKs(collection.Schema, result.IDs)
+		})
+	})
+	c.recordOperation("Insert", collectionName, startTime, err)
+	return result, err
+}
+
+type DeleteResult struct {
+	DeleteCount int64
+}
+
+func (c *Client) Delete(ctx context.Context, option DeleteOption, callOptions ...grpc.CallOption) (DeleteResult, error) {
+	startTime := time.Now()
+	req, err := option.Request()
+	collectionName := req.GetCollectionName()
+	result := DeleteResult{}
+	defer func() {
+		c.recordOperation("Delete", collectionName, startTime, err)
+	}()
+	if err != nil {
+		return result, err
+	}
+
+	err = c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
+		resp, err := milvusService.Delete(ctx, req, callOptions...)
+		if err = merr.CheckRPCCall(resp, err); err != nil {
+			return err
+		}
+		result.DeleteCount = resp.GetDeleteCnt()
+		return nil
+	})
+	return result, err
+}
+
+type UpsertResult struct {
+	UpsertCount int64
+	IDs         column.Column
+}
+
+func (c *Client) Upsert(ctx context.Context, option UpsertOption, callOptions ...grpc.CallOption) (UpsertResult, error) {
+	startTime := time.Now()
+	collectionName := option.CollectionName()
+	result := UpsertResult{}
+	err := c.retryIfSchemaError(ctx, collectionName, func(ctx context.Context) (uint64, error) {
+		collection, err := c.getCollection(ctx, collectionName)
+		if err != nil {
+			return math.MaxUint64, err
+		}
+		req, err := option.UpsertRequest(collection)
+		if err != nil {
+			// Only the idempotency-key-on-Upsert rejection short-circuits: it is
+			// a caller mistake no schema refresh can fix. Every other parameter
+			// error falls through to the schema-mismatch retry.
+			if errors.Is(err, errIdempotencyKeyUnsupportedForDML) {
+				return collection.UpdateTimestamp, err
+			}
+			// return schema mismatch err to retry with newer schema
+			return collection.UpdateTimestamp, merr.WrapErrCollectionSchemaMisMatch(err)
+		}
+		return collection.UpdateTimestamp, c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
+			resp, err := milvusService.Upsert(ctx, req, callOptions...)
+			if err = merr.CheckRPCCall(resp, err); err != nil {
+				return err
+			}
+			result.UpsertCount = resp.GetUpsertCnt()
+			result.IDs, err = column.IDColumns(collection.Schema, resp.GetIDs(), 0, -1)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	})
+	c.recordOperation("Upsert", collectionName, startTime, err)
+	return result, err
+}

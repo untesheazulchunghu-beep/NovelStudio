@@ -1,0 +1,321 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { QuestionFilled } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { useAssistantPreferences } from '@renderer/composables/useAssistantPreferences'
+import {
+  playTaskDoneSound,
+  requestTaskDoneNotificationPermission,
+  unlockTaskDoneSound,
+  type DesktopNotificationMode,
+} from '@renderer/utils/taskDoneNotifier'
+
+// 通过组合式统一管理灵感助手偏好，方便在设置页与助手面板之间复用
+const prefs = useAssistantPreferences()
+
+const ctxSummaryEnabled = computed({
+  get: () => prefs.contextSummaryEnabled.value,
+  set: (val: boolean) => prefs.setContextSummaryEnabled(val)
+})
+
+const ctxSummaryThreshold = computed({
+  get: () => prefs.contextSummaryThreshold.value,
+  set: (val: number | null) => prefs.setContextSummaryThreshold(val)
+})
+
+const reactModeEnabled = computed({
+  get: () => prefs.reactModeEnabled.value,
+  set: (val: boolean) => prefs.setReactModeEnabled(val)
+})
+
+const assistantTemperature = computed({
+  get: () => prefs.assistantTemperature.value,
+  set: (val: number | null) => prefs.setAssistantTemperature(val)
+})
+
+const assistantMaxTokens = computed({
+  get: () => prefs.assistantMaxTokens.value,
+  set: (val: number | null) => prefs.setAssistantMaxTokens(val)
+})
+
+const assistantTimeout = computed({
+  get: () => prefs.assistantTimeout.value,
+  set: (val: number | null) => prefs.setAssistantTimeout(val)
+})
+
+const assistantFontSize = computed({
+  get: () => prefs.assistantFontSize.value,
+  set: (val: number | null) => prefs.setAssistantFontSize(val)
+})
+
+const taskDoneSoundEnabled = computed({
+  get: () => prefs.taskDoneSoundEnabled.value,
+  set: (val: boolean) => {
+    void setTaskDoneSoundEnabled(val)
+  }
+})
+
+const taskDoneDesktopNotificationMode = computed({
+  get: () => prefs.taskDoneDesktopNotificationMode.value,
+  set: (val: DesktopNotificationMode) => {
+    void setTaskDoneDesktopNotificationMode(val)
+  }
+})
+
+async function setTaskDoneSoundEnabled(val: boolean): Promise<void> {
+  prefs.setTaskDoneSoundEnabled(val)
+  if (!val) return
+
+  await unlockTaskDoneSound()
+}
+
+async function handleTestTaskDoneSound(): Promise<void> {
+  try {
+    const played = await playTaskDoneSound()
+    if (!played) {
+      ElMessage.warning('提示音播放失败，请检查系统音量、应用音量或浏览器音频权限。')
+    }
+  } catch {
+    ElMessage.warning('提示音播放失败，请检查系统音量、应用音量或浏览器音频权限。')
+  }
+}
+
+async function setTaskDoneDesktopNotificationMode(val: DesktopNotificationMode): Promise<void> {
+  if (val === 'none') {
+    prefs.setTaskDoneDesktopNotificationMode('none')
+    return
+  }
+
+  prefs.setTaskDoneDesktopNotificationMode(val)
+
+  const permission = await requestTaskDoneNotificationPermission()
+  if (permission === 'granted') {
+    ElMessage.success('桌面通知已启用。')
+    return
+  }
+
+  prefs.setTaskDoneDesktopNotificationMode('none')
+  if (permission === 'denied') {
+    ElMessage.warning('桌面通知权限已被系统或浏览器拒绝，请在系统/浏览器设置中允许通知。')
+    return
+  }
+  if (permission === 'unsupported') {
+    ElMessage.warning('当前环境不支持桌面通知。')
+    return
+  }
+  ElMessage.warning('未授予桌面通知权限。')
+}
+</script>
+
+<template>
+  <div class="assistant-settings-root">
+    <h3 class="section-title">Agent 设置</h3>
+    <p class="section-desc">
+      配置通用 Agent 的高级能力，灵感助手与工作流 Agent 共享这些参数与模式。
+    </p>
+
+    <el-form label-width="160px" class="assistant-form" size="small">
+      <!-- 参数配置组 -->
+      <div class="group-title">参数设置</div>
+
+      <el-form-item>
+        <template #label>
+          <span>
+            助手字体大小
+            <el-tooltip placement="top" effect="dark">
+              <template #content>
+                控制灵感助手消息、工具结果和输入框的主要文字大小。默认 16px，不影响正文编辑器字号。
+              </template>
+              <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+        </template>
+        <el-input-number
+          v-model="assistantFontSize"
+          :min="13"
+          :max="24"
+          :step="1"
+          controls-position="right"
+        />
+        <span class="field-hint">px</span>
+      </el-form-item>
+
+      <el-form-item>
+        <template #label>
+          <span>
+            采样温度 (temperature)
+            <el-tooltip placement="top" effect="dark">
+              <template #content>
+                控制输出的随机性，数值越大越有创意、越发散，越小越保守、越稳定。<br/>
+                建议范围 0.4 ~ 0.9。默认值为 0.6。
+              </template>
+              <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+        </template>
+        <el-input-number
+          v-model="assistantTemperature"
+          :min="0.1"
+          :max="2"
+          :step="0.1"
+          :precision="2"
+          controls-position="right"
+          placeholder="0.6"
+        />
+      </el-form-item>
+
+      <el-form-item>
+        <template #label>
+          <span>
+            最大输出 Token 数
+            <el-tooltip placement="top" effect="dark">
+              <template #content>
+                控制单次回复的最大长度。值越大，回复可以越长，但也会增加响应时间和费用。<br/>
+                默认值为 -1（不限制）。
+              </template>
+              <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+        </template>
+        <el-input-number
+          v-model="assistantMaxTokens"
+          :min="-1"
+          :max="65536"
+          :step="512"
+          controls-position="right"
+          placeholder="-1"
+        />
+      </el-form-item>
+
+      <el-form-item>
+        <template #label>
+          <span>
+            超时 (秒)
+            <el-tooltip placement="top" effect="dark">
+              <template #content>
+                限制单次调用的最长等待时间，避免请求长时间挂起。<br/>
+                默认值为 90 秒。
+              </template>
+              <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+        </template>
+        <el-input-number
+          v-model="assistantTimeout"
+          :min="10"
+          :max="600"
+          :step="10"
+          controls-position="right"
+          placeholder="90"
+        />
+      </el-form-item>
+
+      <el-divider />
+
+      <!-- React 配置组 -->
+      <div class="group-title">模式设置</div>
+      <el-form-item>
+        <template #label>
+          <span>
+            React 模式
+            <el-tooltip placement="top" effect="dark">
+              <template #content>
+                让模型通过文本协议输出工具调用指令（<Action>{...}</Action>），
+                系统解析后真正调用工具，适合不支持函数调用的模型。
+              </template>
+              <el-icon class="field-help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+        </template>
+        <el-switch v-model="reactModeEnabled" />
+      </el-form-item>
+
+      <el-divider />
+
+      <div class="group-title">完成提醒</div>
+      <el-form-item label="任务完成后播放提示音">
+        <div class="reminder-control">
+          <div class="reminder-control-row">
+            <el-switch v-model="taskDoneSoundEnabled" />
+            <el-button size="small" plain @click="handleTestTaskDoneSound">试听提示音</el-button>
+          </div>
+          <span class="field-hint reminder-hint"
+            >灵感助手、续写、润色、扩写、审阅完成或失败时播放提示音（失败为降调音，便于区分）。</span
+          >
+        </div>
+      </el-form-item>
+      <el-form-item label="桌面通知策略">
+        <div class="reminder-control">
+          <el-radio-group v-model="taskDoneDesktopNotificationMode" size="small">
+            <el-radio-button label="none">关闭（不提示）</el-radio-button>
+            <el-radio-button label="failed_only">仅失败时提示</el-radio-button>
+            <el-radio-button label="all">完成和失败均提示</el-radio-button>
+          </el-radio-group>
+          <span class="field-hint reminder-hint">
+            灵感助手、续写、润色、扩写、审阅等任务的系统桌面通知触发策略（需要系统或浏览器允许通知权限）。
+          </span>
+        </div>
+      </el-form-item>
+    </el-form>
+  </div>
+</template>
+
+<style scoped>
+.assistant-settings-root {
+  padding: 16px 12px 24px 12px;
+}
+
+.section-title {
+  margin: 0 0 4px 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.section-desc {
+  margin: 0 0 16px 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.assistant-form {
+  max-width: 520px;
+}
+
+.field-hint {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.reminder-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reminder-control-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reminder-hint {
+  margin-left: 0;
+}
+
+.hint-alert {
+  margin-top: 12px;
+}
+
+.group-title {
+  margin: 8px 0 4px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+}
+
+.field-help-icon {
+  margin-left: 4px;
+  cursor: help;
+}
+</style>

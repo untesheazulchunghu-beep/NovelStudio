@@ -1,0 +1,204 @@
+package utils
+
+import (
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+)
+
+// PartitionUniqueKey is the unique key of a partition.
+type PartitionUniqueKey struct {
+	CollectionID int64
+	PartitionID  int64 // -1 means all partitions, see common.AllPartitionsID.
+}
+
+// IsAllPartitions returns true if the partition is all partitions.
+func (k *PartitionUniqueKey) IsAllPartitions() bool {
+	return k.PartitionID == common.AllPartitionsID
+}
+
+// SegmentBelongs is the info of segment belongs to a channel.
+type SegmentBelongs struct {
+	PChannel     string
+	VChannel     string
+	CollectionID int64
+	PartitionID  int64
+	SegmentID    int64
+}
+
+// PartitionUniqueKey returns the partition unique key of the segment belongs.
+func (s *SegmentBelongs) PartitionUniqueKey() PartitionUniqueKey {
+	return PartitionUniqueKey{
+		CollectionID: s.CollectionID,
+		PartitionID:  s.PartitionID,
+	}
+}
+
+// SegmentStats is the usage stats of a segment.
+type SegmentStats struct {
+	Modified              ModifiedMetrics
+	RuntimeFlushSize      uint64    // runtime-only size used by StreamingNode flush HWM/LWM decisions; not persisted into recovery meta.
+	MaxRows               uint64    // MaxRows is the soft assignment target of the segment and is fixed when the segment becomes growing.
+	MaxBinarySize         uint64    // MaxBinarySize is the soft assignment target of the segment and is fixed when the segment becomes growing.
+	CreateTime            time.Time // created timestamp of this segment, it's a fixed value when segment is created, not a tso.
+	LastModifiedTime      time.Time // LastWriteTime is the last write time of this segment, it's not a tso, just a local time.
+	CreateSegmentTimeTick uint64
+	BinLogCounter         uint64 // BinLogCounter is the counter of binlog (equal to the binlog file count of primary key), it's an async stat not real time.
+	BinLogFileCounter     uint64 // BinLogFileCounter is the counter of binlog files, it's an async stat not real time.
+	ReachLimit            bool   // ReachLimit means this segment has accepted its one allocation that crossed the soft assignment target.
+	Level                 datapb.SegmentLevel
+}
+
+// NewSegmentStatFromProto creates a new segment assignment stat from proto.
+func NewSegmentStatFromProto(statProto *streamingpb.SegmentAssignmentStat) *SegmentStats {
+	if statProto == nil {
+		return nil
+	}
+	lv := datapb.SegmentLevel_L1
+	if statProto.Level != datapb.SegmentLevel_Legacy {
+		lv = statProto.Level
+	}
+	if lv != datapb.SegmentLevel_L0 && lv != datapb.SegmentLevel_L1 {
+		panic(fmt.Sprintf("invalid level: %s", lv))
+	}
+	maxRows := uint64(math.MaxUint64)
+	if statProto.MaxRows != 0 {
+		maxRows = statProto.MaxRows
+	}
+	return &SegmentStats{
+		Modified: ModifiedMetrics{
+			Rows:       statProto.ModifiedRows,
+			BinarySize: statProto.ModifiedBinarySize,
+		},
+		MaxRows:               maxRows,
+		MaxBinarySize:         statProto.MaxBinarySize,
+		CreateTime:            time.Unix(statProto.CreateTimestamp, 0),
+		CreateSegmentTimeTick: statProto.CreateSegmentTimeTick,
+		BinLogCounter:         statProto.BinlogCounter,
+		LastModifiedTime:      time.Unix(statProto.LastModifiedTimestamp, 0),
+		Level:                 lv,
+	}
+}
+
+// NewProtoFromSegmentStat creates a new proto from segment assignment stat.
+func NewProtoFromSegmentStat(stat *SegmentStats) *streamingpb.SegmentAssignmentStat {
+	if stat == nil {
+		return nil
+	}
+	return &streamingpb.SegmentAssignmentStat{
+		MaxRows:               stat.MaxRows,
+		MaxBinarySize:         stat.MaxBinarySize,
+		ModifiedRows:          stat.Modified.Rows,
+		ModifiedBinarySize:    stat.Modified.BinarySize,
+		CreateTimestamp:       stat.CreateTime.Unix(),
+		CreateSegmentTimeTick: stat.CreateSegmentTimeTick,
+		BinlogCounter:         stat.BinLogCounter,
+		LastModifiedTimestamp: stat.LastModifiedTime.Unix(),
+		Level:                 stat.Level,
+	}
+}
+
+// AllocRows alloc space of rows on current segment.
+// Return true if the segment is assigned.
+func (s *SegmentStats) AllocRows(m ModifiedMetrics) bool {
+	// Every segment may accept exactly one allocation that crosses its soft
+	// assignment target. Once that crossing allocation has been accepted, all
+	// later allocations must move to another segment.
+	if s.ReachLimit || s.isOverAssignmentTarget() {
+		s.ReachLimit = true
+		return false
+	}
+
+	if m.BinarySize > s.BinaryCanBeAssign() || m.Rows > s.RowsCanBeAssign() {
+		// The target is a sealing threshold, not a hard admission limit. Accept
+		// the indivisible allocation that crosses it and seal afterwards.
+		s.ReachLimit = true
+	}
+
+	s.Modified.Collect(m)
+	s.LastModifiedTime = time.Now()
+	return true
+}
+
+func (s *SegmentStats) isOverAssignmentTarget() bool {
+	return s.Modified.BinarySize > s.MaxBinarySize || s.Modified.Rows > s.MaxRows
+}
+
+// AllocRuntimeFlushSize records runtime-only size growth for flush HWM/LWM decisions.
+func (s *SegmentStats) AllocRuntimeFlushSize(size uint64) {
+	if size > math.MaxUint64-s.RuntimeFlushSize {
+		s.RuntimeFlushSize = math.MaxUint64
+		return
+	}
+	s.RuntimeFlushSize += size
+}
+
+// FlushSize returns the size used by runtime flush decisions.
+func (s *SegmentStats) FlushSize() uint64 {
+	if s.RuntimeFlushSize > 0 {
+		return s.RuntimeFlushSize
+	}
+	return s.Modified.BinarySize
+}
+
+// BinaryCanBeAssign returns the capacity of binary size can be inserted.
+func (s *SegmentStats) BinaryCanBeAssign() uint64 {
+	return SaturatingSubUint64(s.MaxBinarySize, s.Modified.BinarySize)
+}
+
+// RowsCanBeAssign returns the capacity of rows can be inserted.
+func (s *SegmentStats) RowsCanBeAssign() uint64 {
+	return SaturatingSubUint64(s.MaxRows, s.Modified.Rows)
+}
+
+// ShouldBeSealed returns if the segment should be sealed.
+func (s *SegmentStats) ShouldBeSealed() bool {
+	// ReachLimit is runtime-only, so it is lost when SegmentStats is rebuilt
+	// from the persisted assignment stat. Recover the same sealing decision
+	// from the persisted modified metrics and assignment targets.
+	return s.ReachLimit || s.isOverAssignmentTarget()
+}
+
+// IsEmpty returns if the segment is empty.
+func (s *SegmentStats) IsEmpty() bool {
+	return s.Modified.Rows == 0
+}
+
+// Copy copies the segment stats.
+func (s *SegmentStats) Copy() *SegmentStats {
+	s2 := *s
+	return &s2
+}
+
+// ModifiedMetrics is the metrics of insert/delete operation.
+type ModifiedMetrics struct {
+	Rows       uint64
+	BinarySize uint64
+}
+
+// IsZero return true if ModifiedMetrics is zero.
+func (m *ModifiedMetrics) IsZero() bool {
+	return m.Rows == 0 && m.BinarySize == 0
+}
+
+// Collect collects other metrics.
+func (m *ModifiedMetrics) Collect(other ModifiedMetrics) {
+	m.Rows += other.Rows
+	m.BinarySize += other.BinarySize
+}
+
+// Subtract subtract by other metrics.
+func (m *ModifiedMetrics) Subtract(other ModifiedMetrics) {
+	if m.Rows < other.Rows {
+		panic(fmt.Sprintf("rows cannot be less than zero, current: %d, target: %d", m.Rows, other.Rows))
+	}
+	if m.BinarySize < other.BinarySize {
+		panic(fmt.Sprintf("binary size cannot be less than zero, current: %d, target: %d", m.Rows, other.Rows))
+	}
+	m.Rows -= other.Rows
+	m.BinarySize -= other.BinarySize
+}

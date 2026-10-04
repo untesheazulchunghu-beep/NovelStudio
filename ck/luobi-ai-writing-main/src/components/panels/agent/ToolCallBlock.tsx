@@ -1,0 +1,138 @@
+/**
+ * ToolCallBlock — Tool 调用可视化区块
+ *
+ * 显示 Agent 调用的每个 Tool：
+ * - 折叠的头部：Tool 名称 + 来源徽章 + 状态指示
+ * - 展开的主体：参数 JSON + 执行结果
+ *
+ * 参考 Cursor/Antigravity 的 tool-use 可视化设计。
+ */
+import { useState } from 'react'
+import {
+  Wrench,
+  ChevronRight,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  AlertTriangle,
+} from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import type { ToolCallInfo } from '../../../services/agent/agent-engine'
+import { Button } from '../../ui/Button'
+
+interface Props {
+  toolCall: ToolCallInfo
+}
+
+/** 状态图标映射 */
+function StatusIcon({ status }: { status: ToolCallInfo['status'] }) {
+  switch (status) {
+    case 'completed':
+      return <CheckCircle2 size={13} className="tool-call-status completed" />
+    case 'failed':
+      return <XCircle size={13} className="tool-call-status failed" />
+    case 'running':
+      return <Loader2 size={13} className="tool-call-status running tool-spinner" />
+    case 'waiting_confirm':
+      return <AlertTriangle size={13} className="tool-call-status waiting_confirm tool-pulse" />
+    case 'pending':
+    default:
+      return <Loader2 size={13} className="tool-call-status running" style={{ opacity: 0.3 }} />
+  }
+}
+
+/** 状态文字 */
+function statusLabel(status: ToolCallInfo['status'], t: (key: string) => string): string {
+  switch (status) {
+    case 'completed': return t('toolCall.completed')
+    case 'failed': return t('toolCall.failed')
+    case 'running': return t('toolCall.running')
+    case 'waiting_confirm': return t('toolCall.waitingConfirm')
+    case 'pending': return t('toolCall.pending')
+    default: return ''
+  }
+}
+
+export default function ToolCallBlock({ toolCall }: Props) {
+  const { t } = useTranslation('panels')
+  const [expanded, setExpanded] = useState(false)
+  const { toolName, arguments: args, status, result, error, source } = toolCall
+
+  return (
+    <div className="tool-call-block">
+      {/* 折叠头部 */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        className="tool-call-header cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setExpanded(v => !v)
+          }
+        }}
+      >
+        <div className="tool-call-icon">
+          <Wrench size={12} style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+
+        <span className="tool-call-name" title={toolName}>{toolName}</span>
+
+        {/* 来源徽章 */}
+        {source && (
+          <span className={`tool-call-source-badge ${source}`}>
+            {source === 'builtin' ? t('toolCall.builtin') : source === 'mcp' ? 'MCP' : t('agent.skill')}
+          </span>
+        )}
+
+        {/* 状态 */}
+        <div className="tool-call-status" style={{ marginLeft: 'auto' }}>
+          <StatusIcon status={status} />
+          <span>{statusLabel(status, t)}</span>
+        </div>
+
+        {/* 展开箭头 */}
+        <ChevronRight
+          size={12}
+          className={`tool-call-arrow ${expanded ? 'expanded' : ''}`}
+        />
+      </div>
+
+      {/* 展开区域 */}
+      {expanded && (
+        <div className="tool-call-body">
+          {/* 参数 */}
+          {Object.keys(args).length > 0 && (
+            <div className="tool-call-params">
+              {JSON.stringify(args, null, 2)}
+            </div>
+          )}
+
+          {/* 结果 */}
+          {result && (
+            <div className="tool-call-result" style={{ position: 'relative' }}>
+              {result}
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => navigator.clipboard.writeText(result).catch(() => {})}
+                className="absolute top-1 right-1 opacity-0 hover:opacity-100"
+                title={t('toolCall.copyResult')}
+              >
+                {t('toolCall.copy')}
+              </Button>
+            </div>
+          )}
+
+          {/* 错误 */}
+          {error && (
+            <div className="tool-call-result" style={{ color: 'var(--color-error)' }}>
+              ❌ {error.length > 500 ? error.slice(0, 500) + '…' : error}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

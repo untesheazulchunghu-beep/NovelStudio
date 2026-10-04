@@ -1,0 +1,464 @@
+/**
+ * 工作流共享工具函数
+ *
+ * 供 architecture-workflow / chapter-workflow 等多个工作流复用的通用逻辑
+ *
+ * 核心组件：
+ * 1. withRetry — 通用异步重试包装器
+ * 2. PostProcessPipeline — 后处理流水线（注册 → 执行 → 持久化 → 修复）
+ */
+
+import type { StepCallbacks } from '../../stores/workflow-store'
+import { useLLMStore } from '../../stores/llm-store'
+import { ipc } from '../ipc-client'
+import i18n from '../../i18n'
+
+const t = (key: string, opts?: Record<string, unknown>) => i18n.t(key, { ns: 'commands', ...opts })
+
+// ===== 文本处理通用工具 =====
+
+/**
+ * 剥除文本中可能包含的 <think>...</think> 思维链标签
+ * 用于清洗大模型在生成正文时输出的思维链，避免其被持久化写入磁盘文件
+ */
+export function stripThinkingTags(text: string): string {
+  if (!text) return text
+  // 支持只有 <think> 没有闭合标签的情况
+  return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim()
+}
+
+/**
+ * 根据当前默认模型的最大 Token 预算计算「单批可安全生成的章节数」。
+ *
+ * 从 llm-store 读取（而非在 command 内直接 import store），避免命令与 store 紧耦合。
+ *
+ * @param modelMaxTokens 模型最大输出 Token（缺省 4096）
+ * @param tokensPerItem 单个章节预估 Token 消耗（缺省 200）
+ * @param minBatch 最小批次（缺省 5）
+ * @param maxBatch 最大批次（缺省 50）
+ */
+export function computeBatchSize(
+  modelMaxTokens: number = 4096,
+  tokensPerItem: number = 200,
+  minBatch: number = 5,
+  maxBatch: number = 50,
+): number {
+  const outputBudget = Math.floor(modelMaxTokens * 0.6) // 预留 40% 给 prompt + 思考
+  return Math.min(maxBatch, Math.max(minBatch, Math.floor(outputBudget / tokensPerItem)))
+}
+
+/**
+ * 通用限流并发执行器
+ *
+ * 在保证并发上限（limit）的同时执行一批异步任务，任一完成即推进下一个。
+ * 取代此前 import-novel 内硬编码的并发实现，供所有批量工作流复用。
+ *
+ * @param tasks 待执行任务列表
+ * @param limit 最大并发数
+ * @param onProgress 可选进度回调（completed 为已完成数量）
+ */
+export async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+  onProgress?: (completed: number, total: number) => void,
+): Promise<Array<{ ok: boolean; value?: T; error?: unknown }>> {
+  const results: Array<{ ok: boolean; value?: T; error?: unknown }> = new Array(tasks.length)
+  let cursor = 0
+  let completed = 0
+
+  const worker = async () => {
+    while (cursor < tasks.length) {
+      const index = cursor++
+      try {
+        results[index] = { ok: true, value: await tasks[index]() }
+      } catch (error) {
+        results[index] = { ok: false, error }
+      }
+      completed++
+      onProgress?.(completed, tasks.length)
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker())
+  await Promise.all(workers)
+  return results
+}
+
+// ===== 流式调用统一封装 =====
+
+export interface StreamToFullTextOptions {
+  /** 请求可选项 */
+  responseFormat?: { type: string }
+  thinking?: boolean
+  maxTokens?: number
+  /** 模型 ID，缺省使用默认模型 */
+  modelId?: string
+  /** 是否可取消（取消时向主进程发起 llm:cancel） */
+  cancelable?: boolean
+  /** 用于判断「是否已取消」的上下文（工作流取消时置 true） */
+  cancelled?: () => boolean
+  /** 每一步 chunk 的进度值（可选） */
+  progressStart?: number
+  progressEnd?: number
+  /** 进度回调 */
+  onProgress?: (progress: number) => void
+}
+
+/**
+ * 统一「流式调用 LLM → 返回完整文本」的封装。
+ *
+ * 替代此前分散在 base-command / finalize-chapter / architecture-workflow
+ * 的三套并行实现，统一：
+ * 1. 错误处理与 Promise 结算（失败/取消必 settle，绝不挂起）
+ * 2. 取消：cancelable 时主动调用 llm:cancel 中断主进程流
+ * 3. <think> 标签剥离
+ * 4. 进度回调
+ *
+ * @param messages LLM 消息
+ * @param callbacks 步骤回调（appendText / log）
+ * @param options 选项
+ * @returns 完整生成文本（已剥离思考标签）
+ */
+export async function streamToFullText(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  callbacks: { appendText?: (text: string) => void; log?: (message: string) => void } | undefined,
+  options?: StreamToFullTextOptions,
+): Promise<string> {
+  const llmStore = useLLMStore.getState()
+  const mid = options?.modelId ?? llmStore.defaultModelId
+  if (!mid) throw new Error(t('base.noDefaultModel'))
+
+  options?.onProgress?.(options.progressStart ?? 0)
+
+  const attempt = (): Promise<string> => new Promise<string>((resolve, reject) => {
+    let fullContent = ''
+    let streamRequestId = ''
+    let settled = false
+
+    // 取消轮询定时器（仅 options.cancelled 时启用）
+    let cancelTimer: ReturnType<typeof setInterval> | null = null
+
+    const settle = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      if (cancelTimer) {
+        clearInterval(cancelTimer)
+        cancelTimer = null
+      }
+      fn()
+    }
+
+    llmStore.generateStream(
+      messages,
+      {
+        onChunk: (chunk) => {
+          // 取消后不再追加输出
+          if (options?.cancelled?.()) return
+          fullContent += chunk
+          callbacks?.appendText?.(chunk)
+        },
+        onDone: (text) => {
+          settle(() => {
+            options?.onProgress?.(options.progressEnd ?? 100)
+            const raw = text || fullContent
+            resolve(stripThinkingTags(raw))
+          })
+        },
+        onError: (err) => {
+          settle(() => {
+            reject(new Error(err || t('base.streamFailed')))
+          })
+        },
+      },
+      mid,
+      {
+        responseFormat: options?.responseFormat,
+        thinking: options?.thinking,
+        maxTokens: options?.maxTokens,
+      },
+    ).then((requestId) => {
+      streamRequestId = requestId
+      // 如果流启动后立即发现已取消（例如流尚未建立时工作流已被取消）
+      if (options?.cancelled?.()) {
+        llmStore.cancelGeneration(requestId).catch(() => {})
+        settle(() => reject(new Error(t('base.workflowCancelled'))))
+      }
+    }).catch((err) => {
+      settle(() => reject(err instanceof Error ? err : new Error(String(err))))
+    })
+
+    // 取消检测：轮询 cancelled 状态，主动中断流
+    if (options?.cancelled) {
+      cancelTimer = setInterval(() => {
+        if (options.cancelled!() && streamRequestId) {
+          llmStore.cancelGeneration(streamRequestId).catch(() => {})
+          settle(() => reject(new Error(t('base.workflowCancelled'))))
+        }
+      }, 200)
+    }
+  })
+
+  try {
+    return await attempt()
+  } catch (error) {
+    if (options?.cancelled?.()) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    if (!isRetryableStreamError(message)) throw error
+    return await attempt()
+  }
+}
+
+/** 仅对可重试错误（网络/超时/限流/5xx）重试；取消、鉴权、解析、max_tokens 截断等不重试 */
+function isRetryableStreamError(message: string): boolean {
+  if (message === '已取消生成' || message === t('base.workflowCancelled')) return false
+  if (message.includes('max_tokens')) return false
+  const httpMatch = message.match(/\(HTTP (\d+)\)/)
+  if (httpMatch) {
+    const status = parseInt(httpMatch[1], 10)
+    return status === 429 || status >= 500
+  }
+  return /timeout|超时|network|网络|fetch|connection|connect|ECONN|ENOTFOUND|EAI_AGAIN|无法建立连接|socket/i.test(message)
+}
+
+// ===== 通用重试包装器 =====
+
+/**
+ * 带重试的异步操作包装器
+ * @param fn 要执行的异步函数
+ * @param maxRetries 最大重试次数（不含首次执行）
+ * @param label 操作标签（用于日志）
+ * @param callbacks 步骤回调（用于输出日志）
+ * @returns 成功返回 { ok: true }，全部失败返回 { ok: false, error }
+ */
+export async function withRetry(
+  fn: () => Promise<void>,
+  maxRetries: number,
+  label: string,
+  callbacks: StepCallbacks,
+): Promise<{ ok: boolean; error?: string; attempts: number }> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      await fn()
+      return { ok: true, attempts: attempt + 1 }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (attempt < maxRetries) {
+        callbacks.log(t('pipeline.retryFailed', { label, attempt: attempt + 1, error: errMsg }))
+      } else {
+        return { ok: false, error: errMsg, attempts: attempt + 1 }
+      }
+    }
+  }
+  return { ok: false, error: t('pipeline.unknownError'), attempts: maxRetries + 1 }
+}
+
+// ===== 后处理流水线 =====
+
+/** 单个后处理步骤定义 */
+export interface PostProcessStep {
+  /** 唯一标识，如 'chapter_notes' */
+  key: string
+  /** 展示名称，如 '📋 章节要点' */
+  label: string
+  /** 关键步骤（失败阻断下游工作流） */
+  critical: boolean
+  /** 步骤执行器 */
+  executor: (callbacks: StepCallbacks) => Promise<void>
+}
+
+/** 单步后处理执行结果（持久化到状态文件） */
+export interface PostProcessStepResult {
+  label: string
+  critical: boolean
+  ok: boolean
+  completedAt?: string
+  error?: string
+  lastAttemptAt: string
+  attemptCount: number
+}
+
+/** 后处理状态（持久化到 .luobi/post_process/{scope}.json） */
+export interface PostProcessStatus {
+  /** 唯一标识，如 'chapter_1_finalize' */
+  scope: string
+  /** 来源描述，如 '第1章定稿' */
+  sourceLabel: string
+  /** 首次执行时间 */
+  createdAt: string
+  /** 最后更新时间 */
+  updatedAt: string
+  /** 各步骤执行结果 */
+  steps: Record<string, PostProcessStepResult>
+  /** 所有关键步骤是否通过 */
+  allCriticalPassed: boolean
+}
+
+/** 解析原有 scope 字符串为 sourceType 和 sourceId */
+function parseScope(scope: string): { sourceType: string; sourceId: string } {
+  const match = scope.match(/^chapter_(\d+)_finalize$/)
+  if (match) return { sourceType: 'chapter_finalize', sourceId: match[1] }
+  return { sourceType: 'unknown', sourceId: scope }
+}
+
+/** 读取后处理状态 (向后兼容 UI) */
+export async function readPostProcessStatus(
+  _projectPath: string,
+  scope: string,
+): Promise<PostProcessStatus | null> {
+  try {
+    const { sourceType, sourceId } = parseScope(scope)
+    const run = await ipc.invoke('db:post-process-get-latest-run', sourceType, sourceId)
+    if (!run) return null
+
+    const steps = await ipc.invoke('db:post-process-get-steps', run.id)
+
+    const status: PostProcessStatus = {
+      scope,
+      sourceLabel: run.sourceLabel,
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      allCriticalPassed: run.allCriticalPassed,
+      steps: {}
+    }
+
+    for (const s of steps) {
+      status.steps[s.stepKey] = {
+        label: s.label,
+        critical: s.critical,
+        ok: s.ok,
+        completedAt: s.completedAt || undefined,
+        error: s.errorMsg || undefined,
+        lastAttemptAt: s.lastAttemptAt || '',
+        attemptCount: s.attemptCount
+      }
+    }
+
+    return status
+  } catch {
+    return null
+  }
+}
+
+/** 快捷检查：所有关键步骤是否通过 */
+export async function isAllCriticalPassed(
+  _projectPath: string,
+  scope: string,
+): Promise<boolean> {
+  const { sourceType, sourceId } = parseScope(scope)
+  return await ipc.invoke('db:post-process-is-all-passed', sourceType, sourceId)
+}
+
+/** 提取失败步骤的展示标签列表 */
+export function getFailedStepLabels(status: PostProcessStatus): string[] {
+  return Object.values(status.steps)
+    .filter(s => !s.ok)
+    .map(s => s.label)
+}
+
+/** 获取章节定稿后处理的 scope 标识 */
+export function getChapterFinalizeScope(chapterNumber: number): string {
+  return `chapter_${chapterNumber}_finalize`
+}
+
+// ===== 流水线执行器 =====
+
+export interface PipelineOptions {
+  /** 每步重试次数，默认 2 */
+  retryCount?: number
+  /** true = 只重跑失败步骤（修复模式） */
+  onlyFailed?: boolean
+}
+
+/**
+ * 执行后处理流水线
+ *
+ * @param projectPath 项目路径（用于状态文件读写）
+ * @param scope 状态文件唯一标识
+ * @param sourceLabel 来源描述（展示用）
+ * @param steps 步骤列表
+ * @param callbacks 工作流回调
+ * @param options 可选配置
+ * @returns 完整的后处理状态
+ */
+export async function runPostProcessPipeline(
+  projectPath: string,
+  scope: string,
+  sourceLabel: string,
+  steps: PostProcessStep[],
+  callbacks: StepCallbacks,
+  options?: PipelineOptions,
+): Promise<PostProcessStatus> {
+  const retryCount = options?.retryCount ?? 2
+  const onlyFailed = options?.onlyFailed ?? false
+
+  const { sourceType, sourceId } = parseScope(scope)
+
+  // 判断是否存在已有 instance
+  let run = await ipc.invoke('db:post-process-get-latest-run', sourceType, sourceId)
+
+  if (!onlyFailed || !run) {
+    // 新建跑批
+    callbacks.log(t('pipeline.initBatch'))
+    const createRes = await ipc.invoke('db:post-process-create-run', {
+      triggerSourceType: sourceType,
+      triggerSourceId: sourceId,
+      sourceLabel,
+      steps: steps.map(s => ({ key: s.key, label: s.label, critical: s.critical }))
+    })
+    if (!createRes.success || !createRes.id) {
+      throw new Error(t('pipeline.createBatchFailed', { error: createRes.error }))
+    }
+    run = await ipc.invoke('db:post-process-get-latest-run', sourceType, sourceId)
+  }
+
+  if (!run) throw new Error(t('pipeline.batchGetFailed'))
+
+  const runId = run.id
+  const runSteps = await ipc.invoke('db:post-process-get-steps', runId)
+  const stepMap = new Map((runSteps as unknown as Array<Record<string, unknown>>).map((s) => [s.stepKey, s]))
+
+  for (const step of steps) {
+    const existingStep = stepMap.get(step.key)
+
+    // 修复模式：跳过已成功的步骤
+    if (onlyFailed && existingStep?.ok) {
+      callbacks.log(t('pipeline.stepSkipped', { label: step.label }))
+      continue
+    }
+
+    const result = await withRetry(() => step.executor(callbacks), retryCount, step.label, callbacks)
+
+    if (result.ok) {
+      await ipc.invoke('db:post-process-mark-step-ok', runId, step.key)
+    } else {
+      await ipc.invoke('db:post-process-mark-step-failed', runId, step.key, result.error || t('pipeline.unknownError'))
+    }
+  }
+
+  // 返回最终状态汇总供 UI 展示
+  const status = await readPostProcessStatus(projectPath, scope)
+  if (!status) {
+    throw new Error(t('pipeline.summaryStatusFailed'))
+  }
+
+  // 最终汇总
+  const failedSteps = Object.values(status.steps).filter(s => !s.ok)
+  const successSteps = Object.values(status.steps).filter(s => s.ok)
+
+  callbacks.log('')
+  callbacks.log(t('pipeline.summaryHeader', { label: sourceLabel }))
+  for (const [, r] of Object.entries(status.steps)) {
+    callbacks.log(r.ok ? t('pipeline.summaryLineSuccess', { label: r.label }) : t('pipeline.summaryLineFailed', { label: r.label, error: r.error }))
+  }
+  callbacks.log(t('pipeline.summaryFooter', { success: successSteps.length, total: Object.keys(status.steps).length }))
+
+  if (failedSteps.length > 0) {
+    const failedLabels = failedSteps.map(r => r.label).join(', ')
+    callbacks.log(t('pipeline.failedStepsWarning', { labels: failedLabels }))
+    if (failedSteps.some(s => s.critical)) {
+      callbacks.log(t('pipeline.criticalFailureHint'))
+    }
+  }
+
+  return status
+}

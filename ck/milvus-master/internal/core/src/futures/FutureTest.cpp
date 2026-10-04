@@ -1,0 +1,280 @@
+// Copyright (C) 2019-2020 Zilliz. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under the License
+
+#include <folly/CancellationToken.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
+#include <folly/futures/Future.h>
+#include <gtest/gtest.h>
+#include <stdlib.h>
+#include <chrono>
+#include <exception>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include "common/EasyAssert.h"
+#include "common/common_type_c.h"
+#include "futures/Executor.h"
+#include "futures/Future.h"
+#include "futures/LeakyResult.h"
+#include "futures/Ready.h"
+#include "futures/future_c.h"
+#include "futures/future_c_types.h"
+#include "gtest/gtest.h"
+#include "index/json_stats/JsonStatsBuildMemoryBudget.h"
+
+using namespace milvus::futures;
+
+TEST(Futures, JsonStatsBuildExecutor) {
+    auto* executor = getJsonStatsBuildExecutor();
+
+    ASSERT_NE(executor, nullptr);
+    EXPECT_NE(executor, getSearchCPUExecutor());
+    EXPECT_NE(executor, getLoadCPUExecutor());
+    EXPECT_EQ(executor->getNumPriorities(), 1);
+    EXPECT_GE(executor->numThreads(), 1);
+
+    std::promise<std::thread::id> promise;
+    auto future = promise.get_future();
+    executor->add(
+        [&promise]() { promise.set_value(std::this_thread::get_id()); });
+
+    EXPECT_NE(future.get(), std::this_thread::get_id());
+}
+
+TEST(Futures, ResizeJsonStatsBuildExecutor) {
+    auto* executor = getJsonStatsBuildExecutor();
+    auto original_thread_num = executor->numThreads();
+
+    auto status = executor_set_json_stats_build_thread_num(3);
+    ASSERT_EQ(status.error_code, milvus::Success);
+    EXPECT_EQ(executor->numThreads(), 3);
+
+    status = executor_set_json_stats_build_thread_num(0);
+    ASSERT_EQ(status.error_code, milvus::Success);
+    EXPECT_EQ(executor->numThreads(), 1);
+
+    status = executor_set_json_stats_build_thread_num(
+        static_cast<int>(original_thread_num));
+    ASSERT_EQ(status.error_code, milvus::Success);
+}
+
+TEST(Futures, SetJsonStatsBuildMemoryBudget) {
+    auto& budget = milvus::index::JsonStatsBuildMemoryBudget::GetInstance();
+    auto original_capacity = budget.CapacityBytes();
+
+    auto status = executor_set_json_stats_build_max_inflight_bytes(1234);
+    EXPECT_EQ(status.error_code, milvus::Success);
+    EXPECT_EQ(budget.CapacityBytes(), 1234);
+
+    status = executor_set_json_stats_build_max_inflight_bytes(
+        static_cast<int64_t>(original_capacity));
+    EXPECT_EQ(status.error_code, milvus::Success);
+    EXPECT_EQ(budget.CapacityBytes(), original_capacity);
+}
+
+TEST(Futures, LeakyResult) {
+    {
+        LeakyResult<int> leaky_result;
+        ASSERT_ANY_THROW(leaky_result.leakyGet());
+    }
+
+    {
+        auto leaky_result = LeakyResult<int>(1, "error");
+        auto [r, s] = leaky_result.leakyGet();
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, 1);
+        ASSERT_STREQ(s.error_msg, "error");
+        free((char*)(s.error_msg));
+    }
+    {
+        auto leaky_result = LeakyResult<int>(new int(1));
+        auto [r, s] = leaky_result.leakyGet();
+        ASSERT_NE(r, nullptr);
+        ASSERT_EQ(*(int*)(r), 1);
+        ASSERT_EQ(s.error_code, 0);
+        ASSERT_EQ(s.error_msg, nullptr);
+        delete (int*)(r);
+    }
+    {
+        LeakyResult<int> leaky_result(1, "error");
+        LeakyResult<int> leaky_result_moved(std::move(leaky_result));
+        auto [r, s] = leaky_result_moved.leakyGet();
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, 1);
+        ASSERT_STREQ(s.error_msg, "error");
+        free((char*)(s.error_msg));
+    }
+    {
+        LeakyResult<int> leaky_result(1, "error");
+        LeakyResult<int> leaky_result_moved;
+        leaky_result_moved = std::move(leaky_result);
+        auto [r, s] = leaky_result_moved.leakyGet();
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, 1);
+        ASSERT_STREQ(s.error_msg, "error");
+        free((char*)(s.error_msg));
+    }
+}
+
+TEST(Futures, Ready) {
+    Ready<int> ready;
+    int a = 0;
+    ready.callOrRegisterCallback([&a]() { a++; });
+    ASSERT_EQ(a, 0);
+    ASSERT_FALSE(ready.isReady());
+    ready.setValue(1);
+    ASSERT_EQ(a, 1);
+    ASSERT_TRUE(ready.isReady());
+    ready.callOrRegisterCallback([&a]() { a++; });
+    ASSERT_EQ(a, 2);
+
+    ASSERT_EQ(std::move(ready).getValue(), 1);
+}
+
+TEST(Futures, Future) {
+    folly::CPUThreadPoolExecutor executor(2);
+
+    // success path.
+    {
+        // try a async function
+        auto future = milvus::futures::Future<int>::async(
+            &executor, 0, [](folly::CancellationToken token) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                return new int(1);
+            });
+        ASSERT_FALSE(future->isReady());
+
+        std::mutex mu;
+        mu.lock();
+        future->registerReadyCallback(
+            [](CLockedGoMutex* mutex) { ((std::mutex*)(mutex))->unlock(); },
+            (CLockedGoMutex*)(&mu));
+        mu.lock();
+        ASSERT_TRUE(future->isReady());
+        auto [r, s] = future->leakyGet();
+
+        ASSERT_NE(r, nullptr);
+        ASSERT_EQ(*(int*)(r), 1);
+        ASSERT_EQ(s.error_code, 0);
+        ASSERT_EQ(s.error_msg, nullptr);
+        delete (int*)(r);
+    }
+
+    // error path.
+    {
+        // try a async function
+        auto future = milvus::futures::Future<int>::async(
+            &executor, 0, [](folly::CancellationToken token) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                throw milvus::SegcoreError(milvus::NotImplemented,
+                                           "unimplemented");
+                return new int(1);
+            });
+        ASSERT_FALSE(future->isReady());
+
+        std::mutex mu;
+        mu.lock();
+        future->registerReadyCallback(
+            [](CLockedGoMutex* mutex) { ((std::mutex*)(mutex))->unlock(); },
+            (CLockedGoMutex*)(&mu));
+        mu.lock();
+        ASSERT_TRUE(future->isReady());
+        auto [r, s] = future->leakyGet();
+
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, milvus::NotImplemented);
+        ASSERT_STREQ(s.error_msg, "unimplemented");
+        free((char*)(s.error_msg));
+    }
+
+    {
+        // try a async function
+        auto future = milvus::futures::Future<int>::async(
+            &executor, 0, [](folly::CancellationToken token) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                throw std::runtime_error("unimplemented");
+                return new int(1);
+            });
+        ASSERT_FALSE(future->isReady());
+
+        std::mutex mu;
+        mu.lock();
+        future->registerReadyCallback(
+            [](CLockedGoMutex* mutex) { ((std::mutex*)(mutex))->unlock(); },
+            (CLockedGoMutex*)(&mu));
+        mu.lock();
+        ASSERT_TRUE(future->isReady());
+        auto [r, s] = future->leakyGet();
+
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, milvus::UnexpectedError);
+        free((char*)(s.error_msg));
+    }
+
+    {
+        // try a async function
+        auto future = milvus::futures::Future<int>::async(
+            &executor, 0, [](folly::CancellationToken token) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                throw folly::FutureNotReady();
+                return new int(1);
+            });
+        ASSERT_FALSE(future->isReady());
+
+        std::mutex mu;
+        mu.lock();
+        future->registerReadyCallback(
+            [](CLockedGoMutex* mutex) { ((std::mutex*)(mutex))->unlock(); },
+            (CLockedGoMutex*)(&mu));
+        mu.lock();
+        ASSERT_TRUE(future->isReady());
+        auto [r, s] = future->leakyGet();
+
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, milvus::FollyOtherException);
+        free((char*)(s.error_msg));
+    }
+
+    // cancellation path.
+    {
+        // try a async function
+        auto future = milvus::futures::Future<int>::async(
+            &executor, 0, [](folly::CancellationToken token) {
+                for (int i = 0; i < 10; i++) {
+                    milvus::futures::throwIfCancelled(token);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                return new int(1);
+            });
+        ASSERT_FALSE(future->isReady());
+        future->cancel();
+
+        std::mutex mu;
+        mu.lock();
+        future->registerReadyCallback(
+            [](CLockedGoMutex* mutex) { ((std::mutex*)(mutex))->unlock(); },
+            (CLockedGoMutex*)(&mu));
+        mu.lock();
+        ASSERT_TRUE(future->isReady());
+        auto [r, s] = future->leakyGet();
+
+        ASSERT_EQ(r, nullptr);
+        ASSERT_EQ(s.error_code, milvus::FollyCancel);
+        free((char*)(s.error_msg));
+    }
+}

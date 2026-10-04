@@ -1,0 +1,336 @@
+import { useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
+import { Trash2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { useAgentStore } from '../../../stores/agent-store'
+import { useLayoutStore } from '../../../stores/layout-store'
+import AgentMessage from './AgentMessage'
+import AgentInputBox from './AgentInputBox'
+import { formatRelativeTime } from '../../../utils/time'
+import { Button } from '../../ui/Button'
+
+/**
+ * 对话区域主组件
+ * - 空状态：居中显示欢迎词 + 输入框 + 最近会话（参考 agent1.html pt-[30vh] 设计）
+ * - 有会话：消息列表 + 底部固定输入框
+ */
+export default function AgentConversation() {
+  const { getActiveConversation, showHistory } = useAgentStore()
+  const activeConv = getActiveConversation()
+
+  // 历史面板模式
+  if (showHistory) {
+    return <AgentHistoryPanel />
+  }
+
+  // 空状态（无活跃会话）
+  if (!activeConv || activeConv.messages.length === 0) {
+    return <EmptyState />
+  }
+
+  // 有消息的对话视图
+  return <ActiveConversation />
+}
+
+// ===== 空状态视图 =====
+
+function EmptyState() {
+  const { t } = useTranslation('panels')
+  const { conversations, selectConversation } = useAgentStore()
+  // 取最近 3 条历史会话（不包含当前空会话、不含仅 system 消息的会话）
+  const hasRealContent = (c: { messages: Array<{ role: string }> }) => c && c.messages.some(m => m.role !== 'system')
+  const recentConvs = conversations
+    .filter(hasRealContent)
+    .slice(0, 3)
+
+
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div
+        className="px-4"
+        style={{ paddingTop: 'max(22vh, 48px)', paddingBottom: 24 }}
+      >
+        {/* 标题 */}
+        <div className="mb-1 pl-1 text-base font-semibold" style={{ color: 'var(--color-text)' }}>
+          落笔
+        </div>
+        {/* 副标题 */}
+        <div className="mb-3 pl-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {t('agentConversation.welcomeSubtitle1')} <code className="px-1 py-0.5 rounded text-[0.68rem]" style={{ backgroundColor: 'var(--color-hover)', color: 'var(--color-accent)' }}>/</code> {t('agentConversation.welcomeSubtitle2')} <code className="px-1 py-0.5 rounded text-[0.68rem]" style={{ backgroundColor: 'var(--color-hover)', color: 'var(--color-accent)' }}>@</code> {t('agentConversation.welcomeSubtitle3')}
+        </div>
+
+        {/* 输入框 */}
+        <AgentInputBox />
+
+
+
+        {/* 最近会话（如有） */}
+        {recentConvs.length > 0 && (
+          <div className="mt-6">
+            <div className="flex flex-col gap-0">
+              {recentConvs.map(conv => (
+                <RecentConversationItem
+                  key={conv.id}
+                  title={conv.title}
+                  updatedAt={conv.updatedAt}
+                  onClick={() => selectConversation(conv.id)}
+                  onDelete={() => useAgentStore.getState().deleteConversation(conv.id)}
+                />
+              ))}
+            </div>
+            {conversations.filter(hasRealContent).length > 3 && (
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => useAgentStore.getState().setShowHistory(true)}
+                className="mt-4 justify-start px-0"
+              >
+                {t('agentConversation.viewAllConversations')}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {/* 底部提示 */}
+        <div className="pt-8 text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>
+          {t('agentConversation.aiDisclaimer')}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===== 活跃对话视图 =====
+
+function ActiveConversation() {
+  const { t } = useTranslation('panels')
+  const { getActiveConversation, generating } = useAgentStore()
+  const activeConv = getActiveConversation()
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+
+  // 消息变化时自动滚动到底部
+  useEffect(() => {
+    if (isAtBottom && scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth',
+      })
+    }
+  }, [activeConv?.messages, generating, isAtBottom])
+
+  // 监听滚动位置判断是否在底部
+  const handleScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setIsAtBottom(distanceFromBottom < 60)
+  }
+
+  /** 跳转到底部 */
+  const scrollToBottom = () => {
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: 'smooth',
+    })
+  }
+
+  if (!activeConv) return null
+
+  return (
+    <div className="flex flex-col h-full relative">
+      {/* 消息列表滚动区 */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4"
+      >
+        <div className="flex flex-col">
+          <AnimatePresence initial={false}>
+            {activeConv.messages
+              .filter(m => m.role !== 'system')
+              .map(msg => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                >
+                  <AgentMessage message={msg} />
+                </motion.div>
+              ))}
+          </AnimatePresence>
+        </div>
+        {/* 底部空间 */}
+        <div className="h-4" />
+      </div>
+
+      {/* 跳到底部浮动按钮 */}
+      {!isAtBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="liquid-glass-control absolute z-10 flex items-center justify-center w-7 h-7 rounded-full shadow-md transition-[border-color,color,transform,background-color] duration-200 ease-out hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg)] focus-visible:ring-[var(--color-accent)] cursor-pointer"
+          style={{
+            right: 16,
+            bottom: 100,
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text-secondary)',
+          }}
+          title={t('agentConversation.scrollToBottom')}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+
+      {/* 底部工具栏 + 输入区 */}
+      <div
+        className="flex-shrink-0 px-3 pb-3 pt-2"
+        style={{ borderTop: '1px solid var(--color-border)' }}
+      >
+        <AgentToolbar />
+        <AgentInputBox />
+      </div>
+    </div>
+  )
+}
+
+// ===== Agent 底部工具栏（小说创作场景） =====
+
+/**
+ * 重构后的工具栏：贴合小说创作场景
+ * 左侧：快速引用按钮（架构、角色、蓝图）
+ * 右侧：打开 AI 输出面板按钮
+ */
+function AgentToolbar() {
+  const { t } = useTranslation('panels')
+  const openRightPanel = useLayoutStore(s => s.openRightPanel)
+
+  return (
+    <div className="flex items-center justify-end mb-1.5">
+
+      {/* 右侧：打开 AI 输出面板 */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => openRightPanel('ai-output')}
+        title={t('agentConversation.switchToAIOutput')}
+        className="border border-[var(--color-border)]"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+        </svg>
+        {t('agentConversation.aiWorkflow')}
+      </Button>
+    </div>
+  )
+}
+
+// ===== 历史面板 =====
+
+function AgentHistoryPanel() {
+  const { t } = useTranslation('panels')
+  const { conversations, activeConversationId, selectConversation, deleteConversation, setShowHistory } = useAgentStore()
+
+  // 按更新时间倒序排列
+  const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* 面板标题 */}
+      <div
+        className="flex items-center justify-between px-3 py-2 flex-shrink-0"
+        style={{ borderBottom: '1px solid var(--color-border)' }}
+      >
+        <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+          {t('agentConversation.allConversations')}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowHistory(false)}
+        >
+          {t('agentConversation.close')}
+        </Button>
+      </div>
+
+      {/* 会话列表 */}
+      <div className="flex-1 overflow-y-auto px-2 py-2">
+        {sorted.length === 0 ? (
+          <div className="flex items-center justify-center h-24 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+            {t('agentConversation.noConversations')}
+          </div>
+        ) : (
+          sorted.map(conv => (
+            <RecentConversationItem
+              key={conv.id}
+              title={conv.title}
+              updatedAt={conv.updatedAt}
+              isActive={conv.id === activeConversationId}
+              onClick={() => selectConversation(conv.id)}
+              onDelete={() => deleteConversation(conv.id)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ===== 最近会话列表项 =====
+
+function RecentConversationItem({
+  title,
+  updatedAt,
+  isActive,
+  onClick,
+  onDelete,
+}: {
+  title: string
+  updatedAt: number
+  isActive?: boolean
+  onClick: () => void
+  onDelete: () => void
+}) {
+  const { t } = useTranslation('panels')
+  return (
+    <button
+      onClick={onClick}
+      className={`group w-full flex flex-row items-center justify-between overflow-hidden rounded-[var(--radius-sm)] py-1.5 text-left px-2 box-border transition-[background-color,transform] duration-100 ease-out hover:bg-[var(--color-hover)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg)] focus-visible:ring-[var(--color-accent)] cursor-pointer ${isActive ? 'bg-[var(--color-hover)]' : 'bg-transparent'}`}
+    >
+      {/* 标题 */}
+      <div className="flex items-center gap-x-1 overflow-hidden flex-1 min-w-0">
+        <div
+          className="truncate text-xs"
+          style={{ color: 'var(--color-text)', opacity: isActive ? 1 : 0.65 }}
+        >
+          {title}
+        </div>
+      </div>
+
+      {/* 右侧：时间 or 删除（纯 CSS group-hover 控制） */}
+      <div className="flex-shrink-0 ml-2">
+        <button
+          onClick={e => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="hidden group-hover:flex items-center justify-center w-4 h-4 rounded opacity-50 hover:opacity-100 transition-opacity cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+          style={{ color: 'var(--color-text-secondary)' }}
+          title={t('agentConversation.deleteConversation')}
+        >
+          <Trash2 size={12} />
+        </button>
+        <span
+          className="group-hover:hidden text-[0.7rem] whitespace-nowrap"
+          style={{ color: 'var(--color-text-muted)', opacity: 0.6 }}
+        >
+          {formatRelativeTime(updatedAt)}
+        </span>
+      </div>
+    </button>
+  )
+}
+
+

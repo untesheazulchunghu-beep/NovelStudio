@@ -1,0 +1,36 @@
+.popup-menu-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.popup-menu-box,
+.popup-color-box {
+  opacity: 1;
+  border-radius: 10px;
+  position: relative;
+  z-index: -1;
+}
+.popup-color-box {
+  padding: 10px 6px;
+  width: 252px;
+  box-sizing: border-box;
+}
+.delete-highlighter-container {
+  position: relative;
+}
+
+.popup-close {
+  position: absolute;
+  top: -30px;
+  right: 70px;
+  cursor: pointer;
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}

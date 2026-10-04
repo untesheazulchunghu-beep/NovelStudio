@@ -1,0 +1,283 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <string>
+#include <utility>
+
+#include "arrow/api.h"
+#include "arrow/io/memory.h"
+#include "common/Consts.h"
+#include "common/EasyAssert.h"
+#include "common/Types.h"
+#include "parquet/arrow/reader.h"
+#include "parquet/exception.h"
+#include "parquet/file_reader.h"
+#include "parquet/metadata.h"
+#include "parquet/properties.h"
+#include "parquet/schema.h"
+#include "parquet/exception.h"
+#include "storage/PayloadReader.h"
+#include "storage/Util.h"
+
+namespace milvus::storage {
+
+namespace {
+// Metadata strings stored inside the file (dim / elementType) are data: a
+// value that fails to parse is a corrupt or incompatible file, not an
+// internal bug. std::stoi throws std::invalid_argument / std::out_of_range,
+// which the ParquetException catch below does not cover, so parse strictly
+// and classify here.
+int
+ParseMetadataInt(const std::string& value, const char* what) {
+    try {
+        return std::stoi(value);
+    } catch (const std::exception& e) {
+        ThrowInfo(ErrorCode::DataFormatBroken,
+                  "malformed {} in parquet field metadata: '{}' ({})",
+                  what,
+                  value,
+                  e.what());
+    }
+}
+}  // namespace
+
+PayloadReader::PayloadReader(const milvus::FieldDataPtr& fieldData)
+    : column_type_(fieldData->get_data_type()),
+      nullable_(fieldData->IsNullable()) {
+    field_data_ = fieldData;
+}
+
+PayloadReader::PayloadReader(
+    const uint8_t* data,
+    int length,
+    DataType data_type,
+    bool nullable,
+    bool is_field_data,
+    std::optional<proto::schema::TypeSchema> array_type)
+    : column_type_(data_type), nullable_(nullable) {
+    init(data, length, is_field_data, std::move(array_type));
+}
+
+void
+PayloadReader::init(const uint8_t* data,
+                    int length,
+                    bool is_field_data,
+                    std::optional<proto::schema::TypeSchema> array_type) {
+    if (column_type_ == DataType::NONE) {
+        payload_buf_ = std::make_shared<BytesBuf>(data, length);
+    } else {
+        try {
+            auto input =
+                std::make_shared<arrow::io::BufferReader>(data, length);
+            arrow::MemoryPool* pool = arrow::default_memory_pool();
+            // Configure general Parquet reader settings
+            auto reader_properties = parquet::ReaderProperties(pool);
+            reader_properties.set_buffer_size(4096 * 4);
+            // reader_properties.enable_buffered_stream();
+
+            // Configure Arrow-specific Parquet reader settings
+            auto arrow_reader_props = parquet::ArrowReaderProperties();
+            arrow_reader_props.set_batch_size(128 * 1024);  // default 64 * 1024
+            arrow_reader_props.set_pre_buffer(false);
+
+            parquet::arrow::FileReaderBuilder reader_builder;
+            auto st = reader_builder.Open(input, reader_properties);
+            if (!st.ok()) {
+                ThrowInfo(ArrowStatusToErrorCode(st),
+                          "failed to open parquet file reader: {}",
+                          st.ToString());
+            }
+            reader_builder.memory_pool(pool);
+            reader_builder.properties(arrow_reader_props);
+
+            std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
+            st = reader_builder.Build(&arrow_reader);
+            if (!st.ok()) {
+                ThrowInfo(ArrowStatusToErrorCode(st),
+                          "failed to build parquet file reader: {}",
+                          st.ToString());
+            }
+
+            int64_t column_index = 0;
+            auto file_meta = arrow_reader->parquet_reader()->metadata();
+
+            // dim is unused for sparse float vector
+            // For nullable vectors, dim is stored in Arrow schema metadata
+            if (IsVectorDataType(column_type_) &&
+                !IsVectorArrayDataType(column_type_) &&
+                !IsSparseFloatVectorDataType(column_type_)) {
+                if (nullable_) {
+                    std::shared_ptr<arrow::Schema> arrow_schema;
+                    auto st = arrow_reader->GetSchema(&arrow_schema);
+                    if (!st.ok()) {
+                        ThrowInfo(ArrowStatusToErrorCode(st),
+                                  "failed to get arrow schema: {}",
+                                  st.ToString());
+                    }
+                    if (!(arrow_schema->num_fields() == 1)) {
+                        ThrowInfo(
+                            ErrorCode::DataFormatBroken,
+                            "Vector field should have exactly 1 field, got {}",
+                            arrow_schema->num_fields());
+                    }
+
+                    auto field = arrow_schema->field(0);
+                    if (field->HasMetadata()) {
+                        auto metadata = field->metadata();
+                        if (metadata->Contains(DIM_KEY)) {
+                            auto dim_str = metadata->Get(DIM_KEY).ValueOrDie();
+                            dim_ = ParseMetadataInt(dim_str, "dim");
+                            if (!(dim_ > 0)) {
+                                ThrowInfo(ErrorCode::DataFormatBroken,
+                                          "nullable vector dim must be "
+                                          "positive, got {}",
+                                          dim_);
+                            }
+                        } else {
+                            ThrowInfo(DataTypeInvalid,
+                                      "nullable vector field metadata missing "
+                                      "required 'dim' field");
+                        }
+                    } else {
+                        ThrowInfo(DataTypeInvalid,
+                                  "nullable vector field is missing metadata");
+                    }
+                } else {
+                    dim_ = GetDimensionFromFileMetaData(
+                        file_meta->schema()->Column(column_index),
+                        column_type_);
+                }
+            } else {
+                dim_ = 1;
+            }
+
+            // For VectorArray, get element type and dim from Arrow schema metadata
+            auto element_type = DataType::NONE;
+            if (IsVectorArrayDataType(column_type_)) {
+                std::shared_ptr<arrow::Schema> arrow_schema;
+                st = arrow_reader->GetSchema(&arrow_schema);
+                if (!st.ok()) {
+                    ThrowInfo(ArrowStatusToErrorCode(st),
+                              "failed to get arrow schema for VectorArray: {}",
+                              st.ToString());
+                }
+                if (!(arrow_schema->num_fields() == 1)) {
+                    ThrowInfo(ErrorCode::DataFormatBroken,
+                              "VectorArray should have exactly 1 field, got {}",
+                              arrow_schema->num_fields());
+                }
+
+                auto field = arrow_schema->field(0);
+                if (!(field->HasMetadata())) {
+                    ThrowInfo(ErrorCode::DataFormatBroken,
+                              "VectorArray field is missing metadata");
+                }
+
+                auto metadata = field->metadata();
+                if (!(metadata != nullptr)) {
+                    ThrowInfo(ErrorCode::DataFormatBroken,
+                              "VectorArray metadata is null");
+                }
+
+                // Get element type
+                if (!(metadata->Contains(ELEMENT_TYPE_KEY_FOR_ARROW))) {
+                    ThrowInfo(ErrorCode::DataFormatBroken,
+                              "VectorArray metadata missing required "
+                              "'elementType' field");
+                }
+                auto element_type_str =
+                    metadata->Get(ELEMENT_TYPE_KEY_FOR_ARROW).ValueOrDie();
+                auto element_type_int =
+                    ParseMetadataInt(element_type_str, "elementType");
+                element_type = static_cast<DataType>(element_type_int);
+
+                // Get dimension from metadata
+                if (!(metadata->Contains(DIM_KEY))) {
+                    ThrowInfo(
+                        ErrorCode::DataFormatBroken,
+                        "VectorArray metadata missing required 'dim' field");
+                }
+                auto dim_str = metadata->Get(DIM_KEY).ValueOrDie();
+                dim_ = ParseMetadataInt(dim_str, "dim");
+                if (!(dim_ > 0)) {
+                    ThrowInfo(ErrorCode::DataFormatBroken,
+                              "VectorArray dim must be positive, got {}",
+                              dim_);
+                }
+            }
+
+            std::shared_ptr<::arrow::RecordBatchReader> rb_reader;
+            st = arrow_reader->GetRecordBatchReader(&rb_reader);
+            if (!st.ok()) {
+                ThrowInfo(ArrowStatusToErrorCode(st),
+                          "failed to get record batch reader: {}",
+                          st.ToString());
+            }
+
+            if (is_field_data) {
+                auto total_num_rows = file_meta->num_rows();
+
+                // Create FieldData, passing element_type for VectorArray
+                field_data_ = CreateFieldData(column_type_,
+                                              element_type,
+                                              nullable_,
+                                              dim_,
+                                              total_num_rows,
+                                              std::move(array_type));
+
+                for (arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+                         maybe_batch : *rb_reader) {
+                    if (!maybe_batch.ok()) {
+                        ThrowInfo(ArrowStatusToErrorCode(maybe_batch.status()),
+                                  "failed to read record batch: {}",
+                                  maybe_batch.status().ToString());
+                    }
+                    auto array = maybe_batch.ValueOrDie()->column(column_index);
+                    // to read
+                    field_data_->FillFieldData(array);
+                }
+
+                if (!nullable_ || !IsVectorDataType(column_type_)) {
+                    AssertInfo(field_data_->IsFull(),
+                               "field data hasn't been filled done");
+                }
+            } else {
+                arrow_reader_ = std::move(arrow_reader);
+                record_batch_reader_ = std::move(rb_reader);
+            }
+        } catch (const parquet::ParquetException& e) {
+            // parquet throws directly on malformed files (corrupt footer/
+            // pages) in addition to returning statuses; classify as permanent
+            // data corruption instead of collapsing to 2001 at the boundary.
+            // ParquetStatusException is the subclass PARQUET_THROW_NOT_OK
+            // raises for ANY non-ok arrow Status, including OutOfMemory --
+            // stamping DataFormatBroken on those would report a retriable
+            // allocation failure as permanent corruption, so its status goes
+            // through the same mapper the ok() checks above use.
+            if (auto* status_ex =
+                    dynamic_cast<const parquet::ParquetStatusException*>(&e)) {
+                ThrowInfo(ArrowStatusToErrorCode(status_ex->status()),
+                          "parquet parse failed: {}",
+                          e.what());
+            }
+            ThrowInfo(ErrorCode::DataFormatBroken,
+                      "parquet parse failed: {}",
+                      e.what());
+        }
+    }
+}
+
+}  // namespace milvus::storage

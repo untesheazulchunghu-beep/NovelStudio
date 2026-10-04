@@ -1,0 +1,441 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package adaptor
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/cockroachdb/errors"
+	"go.uber.org/atomic"
+
+	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
+	"github.com/milvus-io/milvus/internal/streamingnode/server/wal"
+	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/wab"
+	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/metricsutil"
+	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
+	"github.com/milvus-io/milvus/pkg/v3/config"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message/adaptor"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message/messageutil"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/options"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/ratelimit"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/helper"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+)
+
+var (
+	_               wal.Scanner = (*scannerAdaptorImpl)(nil)
+	consumerCounter atomic.Int64
+)
+
+// scannerConfig supplies an already available WAB and an optional startup boundary.
+// Without an injected WAB, RW scanners resolve it through the TimeTick inspector.
+type scannerConfig struct {
+	writeAheadBuffer wab.ROWriteAheadBuffer
+	startupBarrier   *scannerStartupBarrier
+}
+
+// scannerStartupBarrier pauses raw input after this exact barrier until the
+// caller finishes initialization. The consumer snapshots unfinished transactions
+// before delivering the barrier. Cancellation also releases the pause.
+type scannerStartupBarrier struct {
+	message message.ImmutableMessage
+	resume  <-chan struct{}
+}
+
+func (b *scannerStartupBarrier) matches(msg message.ImmutableMessage) bool {
+	return msg.MessageType() == message.MessageTypeRecoveryBarrier &&
+		msg.TimeTick() == b.message.TimeTick() && msg.MessageID().EQ(b.message.MessageID())
+}
+
+// newScannerAdaptor creates a new scanner adaptor.
+func newScannerAdaptor(
+	name string,
+	l walimpls.ROWALImpls,
+	readOption wal.ReadOption,
+	scanMetrics *metricsutil.ScannerMetrics,
+	cleanup func(),
+	config scannerConfig,
+) *scannerAdaptorImpl {
+	if readOption.MesasgeHandler == nil {
+		readOption.MesasgeHandler = adaptor.ChanMessageHandler(make(chan message.ImmutableMessage))
+	}
+	logger := resource.Resource().Logger().With(
+		mlog.FieldComponent("scanner"),
+		mlog.String("name", name),
+		mlog.String("channel", l.Channel().Name),
+	)
+	s := &scannerAdaptorImpl{
+		logger:           logger,
+		writeAheadBuffer: config.writeAheadBuffer,
+		startupBarrier:   config.startupBarrier,
+		innerWAL:         l,
+		readOption:       readOption,
+		filterFunc:       options.GetFilterFunc(readOption.MessageFilter),
+		reorderBuffer:    utility.NewReOrderBuffer(),
+		pendingQueue:     utility.NewPendingQueue(),
+		txnBuffer:        utility.NewTxnBuffer(logger, scanMetrics),
+		cleanup:          cleanup,
+		ScannerHelper:    helper.NewScannerHelper(name),
+		metrics:          scanMetrics,
+		readRateCounter:  utility.NewAverageRateCounter(10 * time.Second), // 10 second sliding window
+	}
+	go s.execute()
+	return s
+}
+
+// scannerAdaptorImpl is a wrapper of ScannerImpls to extend it into a Scanner interface.
+type scannerAdaptorImpl struct {
+	startupBarrier   *scannerStartupBarrier
+	startupTxnBuffer *utility.TxnBuffer // published by delivery of the startup barrier
+	*helper.ScannerHelper
+	writeAheadBuffer wab.ROWriteAheadBuffer
+	logger           *mlog.Logger
+	innerWAL         walimpls.ROWALImpls
+	readOption       wal.ReadOption
+	filterFunc       func(message.ImmutableMessage) bool
+	reorderBuffer    *utility.ReOrderByTimeTickBuffer // support time tick reorder.
+	pendingQueue     *utility.PendingQueue
+	txnBuffer        *utility.TxnBuffer // txn buffer for txn message.
+
+	cleanup         func()
+	clearOnce       sync.Once
+	metrics         *metricsutil.ScannerMetrics
+	readRateCounter *utility.AverageRateCounter // tracks read rate (bytes/sec)
+}
+
+// Channel returns the channel assignment info of the wal.
+func (s *scannerAdaptorImpl) Channel() types.PChannelInfo {
+	return s.innerWAL.Channel()
+}
+
+// Chan returns the message channel of the scanner.
+func (s *scannerAdaptorImpl) Chan() <-chan message.ImmutableMessage {
+	return s.readOption.MesasgeHandler.(adaptor.ChanMessageHandler)
+}
+
+// Close the scanner, release the underlying resources.
+// Return the error same with `Error`
+func (s *scannerAdaptorImpl) Close() error {
+	err := s.ScannerHelper.Close()
+	// Close may be called multiple times, so we need to clear the resources only once.
+	s.clear()
+	return err
+}
+
+// clear clears the resources of the scanner.
+func (s *scannerAdaptorImpl) clear() {
+	s.clearOnce.Do(func() {
+		if s.cleanup != nil {
+			s.cleanup()
+		}
+		s.metrics.Close()
+	})
+}
+
+func (s *scannerAdaptorImpl) execute() {
+	var finalErr error
+	defer func() {
+		s.readOption.MesasgeHandler.Close()
+		s.Finish(finalErr)
+		s.logger.Info(context.TODO(), "scanner is closed")
+	}()
+	s.logger.Info(context.TODO(), "scanner start background task")
+
+	msgChan := make(chan message.ImmutableMessage)
+
+	producerErrCh := make(chan error, 1)
+	// TODO: optimize the extra goroutine here after msgstream is removed.
+	go func() {
+		err := s.produceEventLoop(msgChan)
+		producerErrCh <- err
+		// Wake a consumer blocked in its handler. execute reconciles the two
+		// loop results below and preserves a non-cancellation producer error.
+		s.Cancel()
+	}()
+
+	consumeErr := s.consumeEventLoop(msgChan)
+	s.Cancel()
+	producerErr := <-producerErrCh
+
+	if errors.Is(producerErr, context.Canceled) {
+		s.logger.Info(context.TODO(), "the produce event loop of scanner is closed")
+	} else if producerErr != nil {
+		s.logger.Warn(context.TODO(), "the produce event loop of scanner is closed with unexpected error", mlog.Err(producerErr))
+	}
+	if errors.Is(consumeErr, context.Canceled) {
+		s.logger.Info(context.TODO(), "the consuming event loop of scanner is closed")
+	} else if consumeErr != nil {
+		s.logger.Warn(context.TODO(), "the consuming event loop of scanner is closed with unexpected error", mlog.Err(consumeErr))
+	}
+
+	// A consumer-side processing failure wins if both loops fail. Otherwise a
+	// fatal durable-reader/assembly error must be visible from Scanner.Error().
+	if consumeErr != nil && !errors.Is(consumeErr, context.Canceled) {
+		finalErr = consumeErr
+	} else if producerErr != nil && !errors.Is(producerErr, context.Canceled) {
+		finalErr = producerErr
+	}
+}
+
+// produceEventLoop produces the message from the wal and write ahead buffer.
+func (s *scannerAdaptorImpl) produceEventLoop(msgChan chan<- message.ImmutableMessage) error {
+	wb := s.writeAheadBuffer
+	var err error
+	if wb == nil && s.Channel().AccessMode == types.AccessModeRW {
+		if wb, err = s.waitWriteAheadBuffer(); err != nil {
+			return err
+		}
+	}
+
+	scanner := newSwithableScanner(s.Name(), s.logger, s.innerWAL, wb, s.readOption.DeliverPolicy, msgChan, s.startupBarrier)
+	s.logger.Info(context.TODO(), "start produce loop of scanner at model", mlog.String("model", getScannerModel(scanner)))
+	for {
+		if s.readOption.RateLimitControl != nil {
+			// if the scanner is working with rate limit control,
+			// 1. when the scanner is working at catchup mode, the write operation is fast than the consume operation,
+			// so we need to enter slowdown mode to protect the wal from being overloaded.
+			// 2. when the scanner is working at tailing mode, the write operation is slow than the consume operation,
+			// so we enter into recovery mode to speed up the rate limit.
+			if _, ok := scanner.(*catchupScanner); ok {
+				// Create a checker that returns false when read rate > append rate.
+				// This indicates the scanner has caught up and slowdown should stop.
+				checker := s.createSlowdownChecker()
+				s.readOption.RateLimitControl.EnterSlowdownMode(checker)
+			} else {
+				s.readOption.RateLimitControl.EnterRecoveryMode()
+			}
+		}
+		if scanner, err = scanner.Do(s.Context()); err != nil {
+			return err
+		}
+		m := getScannerModel(scanner)
+		s.metrics.SwitchModel(m)
+		s.logger.Info(context.TODO(), "switch scanner model", mlog.String("model", m))
+	}
+}
+
+func (s *scannerAdaptorImpl) waitWriteAheadBuffer() (wab.ROWriteAheadBuffer, error) {
+	inspector := resource.Resource().TimeTickInspector()
+	for {
+		if operator, ok := inspector.GetOperator(s.Channel()); ok {
+			// Trigger a persisted time tick to make sure the timetick is pushed forward.
+			// The underlying WAL may be deleted by retention policy, so catchup needs
+			// a fresh durable timetick before switching to WAB tailing.
+			inspector.TriggerSync(s.Channel(), true)
+			return operator.WriteAheadBuffer(), nil
+		}
+
+		s.logger.Debug(context.TODO(), "wait for timetick sync operator before using write ahead buffer")
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-s.Context().Done():
+			timer.Stop()
+			return nil, s.Context().Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// consumeEventLoop consumes the message from the message channel and handle it.
+func (s *scannerAdaptorImpl) consumeEventLoop(msgChan <-chan message.ImmutableMessage) error {
+	s.waitUntilStartConsumption()
+	for {
+		var upstream <-chan message.ImmutableMessage
+		if s.pendingQueue.Len() > 16 {
+			// If the pending queue is full, we need to wait until it's consumed to avoid scanner overloading.
+			upstream = nil
+		} else {
+			upstream = msgChan
+		}
+		// generate the event channel and do the event loop.
+		handleResult := s.readOption.MesasgeHandler.Handle(message.HandleParam{
+			Ctx:      s.Context(),
+			Upstream: upstream,
+			Message:  s.pendingQueue.Next(),
+		})
+		if handleResult.Error != nil {
+			return handleResult.Error
+		}
+		if handleResult.MessageHandled {
+			s.pendingQueue.UnsafeAdvance()
+			s.metrics.UpdatePendingQueueSize(s.pendingQueue.Bytes())
+		}
+		if handleResult.Incoming != nil {
+			if err := s.handleUpstream(handleResult.Incoming); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// waitUntilStartConsumption is used to wait until the consumption is started.
+func (s *scannerAdaptorImpl) waitUntilStartConsumption() {
+	s.metrics.PauseConsumption()
+	defer s.metrics.ResumeConsumption()
+
+	pauseConsumption := paramtable.Get().StreamingCfg.WALScannerPauseConsumption.GetAsBool()
+	if !s.readOption.IgnorePauseConsumption && pauseConsumption {
+		resumeChan := make(chan struct{}, 1)
+		watchKey := paramtable.Get().StreamingCfg.WALScannerPauseConsumption.Key
+		handler := config.NewHandler(fmt.Sprintf("%s-%d", watchKey, consumerCounter.Inc()), func(event *config.Event) {
+			pause := paramtable.Get().StreamingCfg.WALScannerPauseConsumption.GetAsBool()
+			if !pause {
+				select {
+				case resumeChan <- struct{}{}:
+				default:
+				}
+			}
+		})
+		paramtable.Get().Watch(watchKey, handler)
+		defer paramtable.Get().Unwatch(watchKey, handler)
+
+		s.logger.Info(context.TODO(), "pause consumption...")
+		select {
+		case <-resumeChan:
+			s.logger.Info(context.TODO(), "continue to consume messages")
+		case <-s.Context().Done():
+			s.logger.Info(context.TODO(), "pause consumption is canceled")
+		}
+	}
+}
+
+// createSlowdownChecker creates a SlowdownChecker for rate limit control.
+// The checker returns false when read rate > append rate, indicating the scanner has caught up.
+func (s *scannerAdaptorImpl) createSlowdownChecker() ratelimit.SlowdownChecker {
+	appendRateCounter := s.readOption.AppendRateCounter
+	if appendRateCounter == nil {
+		// No append rate counter available, always continue slowdown.
+		return nil
+	}
+	return &slowdownCheckerImpl{
+		readRateCounter:   s.readRateCounter,
+		appendRateCounter: appendRateCounter,
+	}
+}
+
+// slowdownCheckerImpl implements ratelimit.SlowdownChecker interface.
+type slowdownCheckerImpl struct {
+	readRateCounter   *utility.AverageRateCounter
+	appendRateCounter *utility.AverageRateCounter
+}
+
+// Check returns true if slowdown should continue, false if it should exit to recovery.
+// Continue slowdown if read rate <= append rate (still catching up).
+// Stop slowdown if read rate > append rate (caught up).
+func (c *slowdownCheckerImpl) Check() bool {
+	return c.readRateCounter.Rate() < c.appendRateCounter.Rate()*0.9
+}
+
+// SlowdownStartupHWM returns the high watermark to start slowdown from.
+// Uses the current read rate as the startup HWM.
+func (c *slowdownCheckerImpl) SlowdownStartupHWM() int64 {
+	return int64(c.readRateCounter.Rate())
+}
+
+// handleUpstream handles the incoming message from the upstream.
+func (s *scannerAdaptorImpl) handleUpstream(msg message.ImmutableMessage) error {
+	// Filtering the message if needed.
+	// System message should never be filtered.
+	if s.filterFunc != nil && !s.filterFunc(msg) {
+		return nil
+	}
+
+	// Track read rate for rate limiting control.
+	s.readRateCounter.Add(int64(msg.EstimateSize()))
+
+	// Observe the message.
+	var isTailing bool
+	msg, isTailing = isTailingScanImmutableMessage(msg)
+	s.metrics.ObserveMessage(isTailing, msg.MessageType(), msg.EstimateSize())
+	if messageutil.IsTimeTickConfirmBarrier(msg.MessageType()) {
+		// If a timetick confirm barrier arrives, the reorder buffer can be
+		// consumed until the latest confirmed timetick.
+		messages := s.reorderBuffer.PopUtilTimeTick(msg.TimeTick())
+		s.metrics.UpdateTimeTickBufSize(s.reorderBuffer.Bytes())
+
+		// There's some txn message need to hold until confirmed, so we need to handle them in txn buffer.
+		msgs := s.txnBuffer.HandleImmutableMessages(messages, msg.TimeTick())
+		s.metrics.UpdateTxnBufSize(s.txnBuffer.Bytes())
+		if s.startupBarrier != nil && s.startupBarrier.matches(msg) && s.startupTxnBuffer == nil {
+			// The producer stops at this barrier until initialization releases the startup barrier.
+			// Publish a detached snapshot before the barrier reaches the consumer.
+			s.startupTxnBuffer = s.txnBuffer.Snapshot()
+		}
+
+		if len(msgs) > 0 {
+			// Push the confirmed messages into pending queue for consuming.
+			if s.logger.LevelEnabled(mlog.DebugLevel) {
+				for _, m := range msgs {
+					s.logger.Debug(context.TODO(), "push message into pending queue",
+						mlog.Uint64("committedTimeTick", msg.TimeTick()),
+						mlog.FieldMessage(m),
+					)
+				}
+			}
+			s.pendingQueue.Add(msgs)
+		}
+		if msg.MessageType() != message.MessageTypeTimeTick || msg.IsPersisted() || s.pendingQueue.Len() == 0 {
+			// Keep the legacy scanner contract for TimeTick messages: persisted
+			// TimeTicks and otherwise-empty batches must reach consumers so the
+			// legacy query pipeline can advance tsafe. Other confirmation barriers
+			// are always delivered.
+			s.pendingQueue.Add([]message.ImmutableMessage{msg})
+		}
+		s.metrics.UpdatePendingQueueSize(s.pendingQueue.Bytes())
+		return nil
+	}
+
+	// Filtering the vchannel
+	// If the message is not belong to any vchannel, it should be broadcasted to all vchannels.
+	// Otherwise, it should be filtered by vchannel.
+	if msg.VChannel() != "" && s.readOption.VChannel != "" && s.readOption.VChannel != msg.VChannel() {
+		return nil
+	}
+	// otherwise add message into reorder buffer directly.
+	pushResult, err := s.reorderBuffer.Push(msg)
+	if err != nil {
+		if errors.Is(err, utility.ErrTimeTickVoilation) {
+			s.metrics.ObserveTimeTickViolation(isTailing, msg.MessageType())
+		}
+		s.logger.Warn(context.TODO(), "failed to push message into reorder buffer",
+			mlog.FieldMessage(msg),
+			mlog.Bool("tailing", isTailing),
+			mlog.Err(err))
+	} else if pushResult.Dropped {
+		switch pushResult.DropReason {
+		case utility.ReOrderByTimeTickBufferDropReasonDuplicateTimeTick:
+			s.metrics.ObservePhysicalDedupDrop(isTailing)
+			s.logger.Warn(context.TODO(), "dropped duplicated non-timetick message from reorder buffer",
+				mlog.String("vchannel", msg.VChannel()),
+				mlog.String("msgID", msg.MessageID().String()),
+				mlog.Uint64("timeTick", msg.TimeTick()),
+				mlog.Bool("tailing", isTailing),
+				mlog.String("dropReason", string(pushResult.DropReason)))
+		}
+	}
+	// Observe the filtered message.
+	s.metrics.UpdateTimeTickBufSize(s.reorderBuffer.Bytes())
+	s.metrics.ObservePassedMessage(isTailing, msg.MessageType(), msg.EstimateSize())
+	return nil
+}

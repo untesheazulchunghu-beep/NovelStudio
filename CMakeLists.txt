@@ -39,11 +39,19 @@ add_executable(NovelStudio
     ${AI_SOURCES}
     ${DATABASE_SOURCES}
     ${UTILS_SOURCES}
+    ${HEADER_FILES}
 )
 
 target_link_libraries(NovelStudio PRIVATE
     SQLite::SQLite3
 )
+
+# Enable warnings
+if(MSVC)
+    target_compile_options(NovelStudio PRIVATE /W4)
+else()
+    target_compile_options(NovelStudio PRIVATE -Wall -Wextra)
+endif()
 
 # Windows specific settings
 if(WIN32)

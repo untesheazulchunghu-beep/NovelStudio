@@ -121,6 +121,24 @@ if(WIN32)
     target_compile_definitions(TestProviders PRIVATE UNICODE _UNICODE)
 endif()
 
+# Demo: Complete AI Writing Assistant
+add_executable(DemoWritingAssistant
+    src/demo_writing_assistant.cpp
+    src/core/ai_service.cpp
+    src/core/config_manager.cpp
+    src/ai/ai_provider_native.cpp
+    src/ai/ai_providers_extended.cpp
+    src/ai/ai_provider_factory.cpp
+    src/utils/http_client.cpp
+    src/utils/json_utils.cpp
+    src/utils/sse_parser.cpp
+    src/utils/logger.cpp
+)
+
+if(WIN32)
+    target_compile_definitions(DemoWritingAssistant PRIVATE UNICODE _UNICODE)
+endif()
+
 # Tests
 if(BUILD_TESTS)
     enable_testing()

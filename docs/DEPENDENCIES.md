@@ -11,16 +11,19 @@ This document tracks external libraries and their usage.
   - Usage: All data persistence
 
 ### HTTP Client
-- **libcurl** - HTTP/HTTPS client
-  - License: curl License (MIT-style)
-  - Version: 8.0+
+- ~~**libcurl**~~ - **REMOVED** ✅
+- **WinHTTP (Windows native)** - HTTP/HTTPS client
+  - License: Built into Windows
   - Usage: AI API communication
+  - Benefits: No external dependencies, native Windows integration
 
 ### JSON
-- **nlohmann/json** - JSON library
-  - License: MIT
-  - Version: 3.11+
+- ~~**nlohmann/json**~~ - **REMOVED** ✅
+- **Custom lightweight JSON parser** - In-house implementation
+  - License: MIT (part of project)
+  - Location: `src/utils/json_utils.cpp`
   - Usage: API request/response parsing
+  - Benefits: No external dependencies, ~500 lines of code
 
 ## Optional Dependencies
 
@@ -63,13 +66,30 @@ This document tracks external libraries and their usage.
 
 ## Installation
 
-### vcpkg (Recommended)
+### vcpkg (Minimal Setup)
 ```bash
-vcpkg install sqlite3 curl nlohmann-json spdlog gtest
+# Only SQLite3 is required as external dependency
+vcpkg install sqlite3:x64-windows
+
+# Optional: For testing
+vcpkg install gtest:x64-windows
 ```
 
 ### Manual
-See individual library documentation for manual installation.
+SQLite3 can also be built from source or downloaded as amalgamation.
+
+## Dependency Reduction Strategy
+
+We've minimized external dependencies by:
+1. **Using Windows native APIs** - WinHTTP for HTTP/HTTPS
+2. **Custom implementations** - Lightweight JSON parser (~500 lines)
+3. **Standard library first** - Using C++20 features instead of libraries
+
+This approach reduces:
+- Build complexity
+- Binary size
+- Potential security vulnerabilities
+- Update/maintenance burden
 
 ## License Compatibility
 

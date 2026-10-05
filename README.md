@@ -51,17 +51,25 @@ A modern Windows-native AI-powered novel writing platform built with C++20. Nove
    cd NovelStudio
    ```
 
-2. **Install dependencies**
+2. **Test native implementations (no SQLite3 required)**
    ```bash
-   vcpkg install sqlite3:x64-windows curl:x64-windows nlohmann-json:x64-windows
+   cmake -G "Visual Studio 18 2026" -A x64 -B build
+   cmake --build build --config Release --target TestNative
+   build\bin\Release\TestNative.exe
    ```
 
-3. **Build the project**
+3. **Install dependencies for full build**
    ```bash
-   build.bat
+   vcpkg install sqlite3:x64-windows
    ```
 
-4. **Run NovelStudio**
+4. **Build the project**
+   ```bash
+   cmake -G "Visual Studio 18 2026" -A x64 -B build
+   cmake --build build --config Release
+   ```
+
+5. **Run NovelStudio**
    ```bash
    build\bin\Release\NovelStudio.exe
    ```
@@ -90,10 +98,18 @@ NovelStudio draws inspiration from several excellent open-source projects:
 - **Language**: C++20/23
 - **Build System**: CMake
 - **Database**: SQLite3
-- **HTTP Client**: libcurl
-- **JSON**: nlohmann/json
+- **HTTP Client**: Windows WinHTTP (native, no external dependency)
+- **JSON**: Custom lightweight parser (~500 lines, no external dependency)
 - **UI**: WinUI 3 (planned) or Qt6
 - **Testing**: Google Test
+
+### Dependency Philosophy
+
+NovelStudio follows a **minimal dependency** approach:
+- ✅ **Only 1 external library** (SQLite3 for data persistence)
+- ✅ **Native implementations** for HTTP and JSON
+- ✅ **Windows-native APIs** (WinHTTP, WinRT)
+- ✅ **Reduced attack surface** and maintenance burden
 
 ## 📸 Screenshots
 

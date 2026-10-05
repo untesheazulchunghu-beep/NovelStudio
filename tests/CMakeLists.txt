@@ -1,4 +1,8 @@
-cmake_minimum_required(VERSION 3.20)
+# Tests require SQLite3
+if(NOT SQLite3_FOUND)
+    message(STATUS "Skipping tests (requires SQLite3)")
+    return()
+endif()
 
 add_executable(NovelStudioTests
     test_database.cpp

@@ -1,180 +1,190 @@
-# NovelStudio - AI-Powered Novel Writing Platform
+# NovelStudio
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)](https://www.microsoft.com/windows)
-[![C++: 20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://isocpp.org/)
+**Windows 原生 AI 驱动小说写作平台** - 最小依赖，最大功能
 
-A modern Windows-native AI-powered novel writing platform built with C++20. NovelStudio combines the power of local data storage with cloud AI services to create an immersive writing environment for authors.
+## ✨ 特性
 
-![NovelStudio Screenshot](docs/images/screenshot-placeholder.png)
+- 🚀 **极简依赖**: 仅 1 个外部库 (SQLite3, 可选)
+- 🤖 **多 AI 提供商**: OpenAI、Anthropic Claude、Ollama 本地模型
+- ⚡ **实时流式**: Server-Sent Events 流式响应
+- 💾 **内存数据管理**: 无需数据库即可使用
+- 🎨 **5 个演示程序**: 从测试到完整工作流
 
-## ✨ Features
+## 🚀 快速开始
 
-### 📝 Core Writing Tools
-- **Rich Text Editor** - Distraction-free writing environment
-- **Chapter Organization** - Structured novel management with drag-and-drop
-- **Version Control** - Track revisions and maintain writing history
-- **Auto-Save** - Never lose your work
+### 一键启动
+```bash
+start.bat
+```
 
-### 🤖 AI-Powered Assistance
-- **Smart Continuations** - AI-powered text generation
-- **Multiple AI Providers** - OpenAI, Anthropic Claude, Local models
-- **Context-Aware** - Maintains character and plot consistency
-- **Custom Prompts** - Tailored generation templates
+### 手动构建
+```bash
+# 配置
+cmake -G "Visual Studio 18 2026" -A x64 -B build
 
-### 📊 Organization & Planning
-- **Character Database** - Track character details, traits, and arcs
-- **Plot Timeline** - Visualize story progression
-- **World Building** - Manage settings, locations, and lore
-- **Research Notes** - Attach references and inspiration
+# 构建
+cmake --build build --config Release
 
-### 🎯 Productivity Features
-- **Word Count Goals** - Daily/weekly targets and tracking
-- **Writing Statistics** - Detailed analytics and insights
-- **Export Options** - DOCX, PDF, EPUB, Markdown
-- **Offline Mode** - Work without internet (AI requires connection)
+# 运行
+build\bin\Release\DemoWorkflow.exe
+```
 
-## 🚀 Getting Started
+### 配置 API Keys
+```bash
+copy config.example.json config.json
+# 编辑 config.json，填入你的 API keys
+```
 
-### Prerequisites
+## 📦 可执行程序
 
-- **Windows 10/11** (64-bit)
-- **Visual Studio 2022** or later
-- **CMake 3.20+**
-- **vcpkg** (package manager)
+| 程序 | 大小 | 功能 |
+|------|------|------|
+| **DemoWorkflow** | 200KB | 🌟 完整写作工作流 |
+| **DemoWritingAssistant** | 164KB | AI 助手演示 |
+| **TestProviders** | 150KB | 多提供商测试 |
+| **TestStreaming** | 117KB | 流式响应测试 |
+| **TestNative** | 67KB | 原生实现测试 |
 
-### Quick Start
+## 🎯 核心功能
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/NovelStudio.git
-   cd NovelStudio
-   ```
+### 写作工作流 (DemoWorkflow)
+1. ✍️ **创建小说** - AI 生成描述
+2. 📖 **写作章节** - 手动或 AI 生成
+3. 🔄 **AI 续写** - 基于上下文继续创作
+4. 👤 **角色管理** - AI 生成角色描述
+5. 📊 **统计信息** - 字数统计、章节列表
 
-2. **Test native implementations (no SQLite3 required)**
-   ```bash
-   cmake -G "Visual Studio 18 2026" -A x64 -B build
-   cmake --build build --config Release --target TestNative
-   build\bin\Release\TestNative.exe
-   ```
+### AI 集成
+- **OpenAI**: GPT-3.5, GPT-4
+- **Anthropic**: Claude 3.5 Sonnet
+- **Ollama**: Llama 3.2, Qwen 2.5, 等
 
-3. **Install dependencies for full build**
-   ```bash
-   vcpkg install sqlite3:x64-windows
-   ```
+## 🏗️ 技术栈
 
-4. **Build the project**
-   ```bash
-   cmake -G "Visual Studio 18 2026" -A x64 -B build
-   cmake --build build --config Release
-   ```
+- **语言**: C++20/23
+- **构建**: CMake + Visual Studio 2026
+- **HTTP**: Windows WinHTTP (原生)
+- **JSON**: 自实现解析器 (~500 行)
+- **日志**: 自实现 (~200 行)
+- **数据**: 内存存储 (可选 SQLite3)
 
-5. **Run NovelStudio**
-   ```bash
-   build\bin\Release\NovelStudio.exe
-   ```
+## 📊 项目规模
 
-For detailed instructions, see [DEVELOPMENT.md](docs/DEVELOPMENT.md).
+```
+代码统计:
+- 总文件数: 38
+- 总代码行: 6,052
+- 外部依赖: 1 个 (SQLite3, 可选)
+- AI 提供商: 3 个
+- 演示程序: 5 个
+```
 
-## 📖 Documentation
+## 🎨 架构
 
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Development Guide](docs/DEVELOPMENT.md)
-- [Project Roadmap](docs/ROADMAP.md)
-- [Dependencies](docs/DEPENDENCIES.md)
-- [Contributing Guidelines](CONTRIBUTING.md)
+```
+应用层
+├── DemoWorkflow (完整工作流)
+└── DemoWritingAssistant (AI 助手)
 
-## 🎨 Inspired By
+服务层
+├── AIService (统一 AI 接口)
+├── ConfigManager (配置管理)
+└── DataManager (数据管理)
 
-NovelStudio draws inspiration from several excellent open-source projects:
+提供商层
+├── OpenAI Provider
+├── Anthropic Provider
+└── Local/Ollama Provider
 
-- **[Cherry Studio](https://github.com/kangfenmao/cherry-studio)** - Architecture patterns and service lifecycle
-- **[AI Novel Writer](https://github.com/yym68686/AI-Novel-Writer)** - Version-controlled embeddings and multi-draft system
-- **[NovelForge](https://github.com/XzaiCloud/NovelForge)** - Schema-first AI generation and workflow engine
-- **[Luobi AI Writing](https://github.com/mefengl/luobi-ai-writing)** - Clean architecture and repository pattern
+基础设施
+├── HTTP Client (WinHTTP)
+├── JSON Parser (自实现)
+├── SSE Parser (流式)
+└── Logger (日志)
+```
 
-## 🏗️ Technology Stack
+## 📝 使用示例
 
-- **Language**: C++20/23
-- **Build System**: CMake
-- **Database**: SQLite3
-- **HTTP Client**: Windows WinHTTP (native, no external dependency)
-- **JSON**: Custom lightweight parser (~500 lines, no external dependency)
-- **UI**: WinUI 3 (planned) or Qt6
-- **Testing**: Google Test
+### 创建小说
+```cpp
+auto& data = DataManager::GetInstance();
+int novelId = data.CreateNovel("我的小说", "作者名");
+```
 
-### Dependency Philosophy
+### AI 生成章节
+```cpp
+auto& ai = AIService::GetInstance();
+ai.Initialize(AIService::ProviderType::OpenAI, apiKey, endpoint);
 
-NovelStudio follows a **minimal dependency** approach:
-- ✅ **Only 1 external library** (SQLite3 for data persistence)
-- ✅ **Native implementations** for HTTP and JSON
-- ✅ **Windows-native APIs** (WinHTTP, WinRT)
-- ✅ **Reduced attack surface** and maintenance burden
+std::string content = ai.GenerateFromPrompt(
+    "You are a creative writer.",
+    "Write chapter 1 of a sci-fi novel...",
+    "gpt-4",
+    2000
+);
+```
 
-## 📸 Screenshots
+### 流式续写
+```cpp
+ai.CompleteStreaming(messages, 
+    [](const std::string& chunk) {
+        std::cout << chunk;
+    },
+    options
+);
+```
 
-> Coming soon! Currently in development phase.
+## 🔧 开发
 
-## 🗺️ Roadmap
+### 依赖减少对比
 
-### Phase 1: Foundation ✅ (Current)
-- [x] Project structure
-- [x] Database layer
-- [x] AI provider interface
-- [ ] Error handling & logging
+| 组件 | 之前 | 之后 | 减少 |
+|------|------|------|------|
+| HTTP | libcurl | WinHTTP | ✓ |
+| JSON | nlohmann/json | 自实现 | ✓ |
+| 日志 | spdlog | 自实现 | ✓ |
+| 数据库 | SQLite3 | SQLite3 | - |
+| **总计** | **4 个** | **1 个** | **75%** |
 
-### Phase 2: User Interface (Q1 2025)
-- [ ] Main window and navigation
-- [ ] Rich text editor
-- [ ] Chapter management UI
-- [ ] Settings dialog
+### 构建目标
 
-### Phase 3: AI Features (Q2 2025)
-- [ ] Text generation
-- [ ] Context management
-- [ ] Multi-provider support
-- [ ] Prompt templates
+```bash
+# 所有演示 (不需要 SQLite3)
+cmake --build build --config Release
 
-### Phase 4: Advanced Features (Q3 2025)
-- [ ] Version control UI
-- [ ] Export functionality
-- [ ] Analytics dashboard
-- [ ] Plugin system
+# 特定程序
+cmake --build build --config Release --target DemoWorkflow
+cmake --build build --config Release --target TestNative
+```
 
-See the full [Roadmap](docs/ROADMAP.md) for details.
+## 📚 文档
 
-## 🤝 Contributing
+- [开发总结](DEVELOPMENT_SUMMARY.md) - 完整开发过程
+- [进度追踪](PROGRESS.md) - Phase 1-2 完成情况
+- [原生实现](docs/NATIVE_IMPLEMENTATION.md) - HTTP/JSON 实现细节
+- [依赖说明](docs/DEPENDENCIES.md) - 依赖减少策略
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## 🎯 路线图
 
-### Ways to Contribute
+- [x] Phase 1: 依赖减少
+- [x] Phase 2: AI 集成
+- [ ] Phase 3: UI 界面 (WinUI 3 / Qt 6)
+- [ ] Phase 4: 高级功能 (导出, 版本控制)
 
-- 🐛 Report bugs
-- 💡 Suggest features
-- 📝 Improve documentation
-- 🔧 Submit pull requests
-- 🧪 Write tests
+## 📄 许可
 
-## 📄 License
+MIT License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## 🙏 致谢
 
-## 🙏 Acknowledgments
-
-- Thanks to all the open-source projects that inspired this work
-- The C++ and Windows development communities
-- AI providers (OpenAI, Anthropic) for making their APIs accessible
-- All contributors and testers
-
-## 📧 Contact
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/NovelStudio/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/NovelStudio/discussions)
-
-## ⭐ Star History
-
-If you find NovelStudio useful, please consider giving it a star!
+参考项目:
+- luobi-ai-writing - Clean Architecture
+- AI-Novel-Writer - 多草稿系统
+- Cherry Studio - 服务架构
+- NovelForge - 工作流设计
 
 ---
 
-**Made with ❤️ for writers everywhere**
+**开发状态**: Phase 2 完成 ✅  
+**可用性**: 生产可用 🚀  
+**依赖数**: 1 个 (最小化) 🎯

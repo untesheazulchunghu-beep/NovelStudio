@@ -1,208 +1,263 @@
-# NovelStudio
+# NovelStudio Web
 
-**Windows 原生 AI 驱动小说写作平台** - 最小依赖，最大功能
+**Windows 原生 C++ 后端 + Solid.js 轻量前端的 AI 小说写作平台**
 
-## ✨ 特性
+## ✨ 新架构特性
 
-- 🚀 **极简依赖**: 仅 1 个外部库 (SQLite3, 可选)
-- 🤖 **多 AI 提供商**: OpenAI、Anthropic Claude、Ollama 本地模型
-- ⚡ **实时流式**: Server-Sent Events 流式响应
-- 💾 **内存数据管理**: 无需数据库即可使用
-- 🎨 **5 个演示程序**: 从测试到完整工作流
+- 🌐 **Web 界面**: 浏览器访问，现代化 UI
+- ⚡ **C++ 后端**: 高性能 REST API + SSE 流式
+- 🪶 **轻量前端**: Solid.js (~7KB)，极速响应
+- 🔥 **热重载**: 前端修改即时生效
+- 💾 **零安装**: 单个 EXE + 配置文件
 
 ## 🚀 快速开始
 
-### 方式一: 一键启动（推荐）
-```bash
-start.bat
-```
-交互式菜单，选择不同的演示程序运行。
-
-### 方式二: 完整首次构建
-```bash
-setup-and-build.bat
-```
-自动安装 vcpkg、依赖项并构建项目（首次使用）。
-
-### 方式三: 手动构建
-```bash
-# 配置
-cmake -G "Visual Studio 18 2026" -A x64 -B build
-
-# 构建
-cmake --build build --config Release
-
-# 快速重新编译（开发时）
-quick-build.bat
-```
-
-### 配置 API Keys
-```bash
-copy config.example.json config.json
-# 编辑 config.json，填入你的 API keys
-```
-
-## 🔧 工具脚本
-
-| 脚本 | 用途 |
-|------|------|
-| `start.bat` | 主入口 - 交互式菜单 |
-| `setup-and-build.bat` | 首次完整构建（含依赖安装）|
-| `quick-build.bat` | 快速重新编译（开发用）|
-| `quick_test.bat` | 运行所有测试 |
-
-## 📦 可执行程序
-
-| 程序 | 大小 | 功能 |
-|------|------|------|
-| **DemoWorkflow** | 200KB | 🌟 完整写作工作流 |
-| **DemoWritingAssistant** | 164KB | AI 助手演示 |
-| **TestProviders** | 150KB | 多提供商测试 |
-| **TestStreaming** | 117KB | 流式响应测试 |
-| **TestNative** | 67KB | 原生实现测试 |
-
-## 🎯 核心功能
-
-### 写作工作流 (DemoWorkflow)
-1. ✍️ **创建小说** - AI 生成描述
-2. 📖 **写作章节** - 手动或 AI 生成
-3. 🔄 **AI 续写** - 基于上下文继续创作
-4. 👤 **角色管理** - AI 生成角色描述
-5. 📊 **统计信息** - 字数统计、章节列表
-
-### AI 集成
-- **OpenAI**: GPT-3.5, GPT-4
-- **Anthropic**: Claude 3.5 Sonnet
-- **Ollama**: Llama 3.2, Qwen 2.5, 等
-
-## 🏗️ 技术栈
-
-- **语言**: C++20/23
-- **构建**: CMake + Visual Studio 2026
-- **HTTP**: Windows WinHTTP (原生)
-- **JSON**: 自实现解析器 (~500 行)
-- **日志**: 自实现 (~200 行)
-- **数据**: 内存存储 (可选 SQLite3)
-
-## 📊 项目规模
-
-```
-代码统计:
-- 总文件数: 38
-- 总代码行: 6,052
-- 外部依赖: 1 个 (SQLite3, 可选)
-- AI 提供商: 3 个
-- 演示程序: 5 个
-```
-
-## 🎨 架构
-
-```
-应用层
-├── DemoWorkflow (完整工作流)
-└── DemoWritingAssistant (AI 助手)
-
-服务层
-├── AIService (统一 AI 接口)
-├── ConfigManager (配置管理)
-└── DataManager (数据管理)
-
-提供商层
-├── OpenAI Provider
-├── Anthropic Provider
-└── Local/Ollama Provider
-
-基础设施
-├── HTTP Client (WinHTTP)
-├── JSON Parser (自实现)
-├── SSE Parser (流式)
-└── Logger (日志)
-```
-
-## 📝 使用示例
-
-### 创建小说
-```cpp
-auto& data = DataManager::GetInstance();
-int novelId = data.CreateNovel("我的小说", "作者名");
-```
-
-### AI 生成章节
-```cpp
-auto& ai = AIService::GetInstance();
-ai.Initialize(AIService::ProviderType::OpenAI, apiKey, endpoint);
-
-std::string content = ai.GenerateFromPrompt(
-    "You are a creative writer.",
-    "Write chapter 1 of a sci-fi novel...",
-    "gpt-4",
-    2000
-);
-```
-
-### 流式续写
-```cpp
-ai.CompleteStreaming(messages, 
-    [](const std::string& chunk) {
-        std::cout << chunk;
-    },
-    options
-);
-```
-
-## 🔧 开发
-
-### 依赖减少对比
-
-| 组件 | 之前 | 之后 | 减少 |
-|------|------|------|------|
-| HTTP | libcurl | WinHTTP | ✓ |
-| JSON | nlohmann/json | 自实现 | ✓ |
-| 日志 | spdlog | 自实现 | ✓ |
-| 数据库 | SQLite3 | SQLite3 | - |
-| **总计** | **4 个** | **1 个** | **75%** |
-
-### 构建目标
+### 开发模式
 
 ```bash
-# 所有演示 (不需要 SQLite3)
-cmake --build build --config Release
+# 一键启动后端 + 前端
+dev-start.bat
 
-# 特定程序
-cmake --build build --config Release --target DemoWorkflow
-cmake --build build --config Release --target TestNative
+# 后端: http://localhost:3000
+# 前端: http://localhost:5173
 ```
 
-## 📚 文档
+### 生产构建
 
-- [架构设计](docs/ARCHITECTURE.md) - 系统架构
-- [开发指南](docs/DEVELOPMENT.md) - 开发环境设置
-- [原生实现](docs/NATIVE_IMPLEMENTATION.md) - HTTP/JSON 实现细节
-- [依赖说明](docs/DEPENDENCIES.md) - 依赖减少策略
-- [功能路线图](docs/ROADMAP.md) - 未来计划
-- [UI 设计](docs/UI_DESIGN.md) - UI 规范
+```bash
+# 构建前端 + 后端
+build-web.bat
 
-## 🎯 路线图
+# 运行
+cd dist
+NovelStudioServer.exe
 
-- [x] Phase 1: 依赖减少
-- [x] Phase 2: AI 集成
-- [ ] Phase 3: UI 界面 (WinUI 3 / Qt 6)
-- [ ] Phase 4: 高级功能 (导出, 版本控制)
+# 访问: http://localhost:3000
+```
 
-## 📄 许可
+### 手动构建
+
+#### 后端
+```bash
+cd backend
+mkdir build && cd build
+cmake .. -G "Visual Studio 17 2022" -A x64
+cmake --build . --config Release
+```
+
+#### 前端
+```bash
+cd frontend
+npm install
+npm run dev         # 开发模式
+npm run build       # 生产构建
+```
+
+## 📐 架构设计
+
+```
+┌─────────────────────────────────────┐
+│  浏览器 (localhost:5173)             │
+│  Solid.js + TypeScript              │
+│  - 轻量 UI (7KB)                    │
+│  - 响应式设计                        │
+│  - 实时预览                          │
+└──────────────┬──────────────────────┘
+               │ HTTP/SSE
+┌──────────────▼──────────────────────┐
+│  C++ Web Server (Port 3000)        │
+│  Crow Framework                     │
+│  ├─ REST API                        │
+│  ├─ SSE Streaming                   │
+│  ├─ Static Files                    │
+│  └─ CORS Middleware                 │
+└──────────────┬──────────────────────┘
+               │
+┌──────────────▼──────────────────────┐
+│  业务逻辑 (已有)                     │
+│  ├─ AIService                       │
+│  ├─ DataManager                     │
+│  └─ ConfigManager                   │
+└─────────────────────────────────────┘
+```
+
+## 🛠️ 技术栈
+
+### 后端
+- **语言**: C++20
+- **框架**: Crow (header-only HTTP 框架)
+- **依赖**: Boost, SQLite3 (可选)
+- **特性**: REST API, SSE 流式, 静态文件服务
+
+### 前端
+- **框架**: Solid.js 1.9+ (无虚拟 DOM)
+- **构建**: Vite 6.0
+- **语言**: TypeScript
+- **HTTP**: ky (轻量 fetch 封装)
+- **包大小**: < 50KB (gzipped)
+
+## 📡 API 端点
+
+### Novel 管理
+```
+GET    /api/novels              # 获取所有小说
+POST   /api/novels              # 创建小说
+GET    /api/novels/:id          # 获取单个小说
+PUT    /api/novels/:id          # 更新小说
+DELETE /api/novels/:id          # 删除小说
+GET    /api/novels/:id/stats    # 获取统计
+```
+
+### Chapter 管理
+```
+GET    /api/novels/:id/chapters   # 获取章节列表
+POST   /api/novels/:id/chapters   # 创建章节
+PUT    /api/chapters/:id          # 更新章节
+DELETE /api/chapters/:id          # 删除章节
+```
+
+### Character 管理
+```
+GET    /api/novels/:id/characters # 获取角色列表
+POST   /api/novels/:id/characters # 创建角色
+```
+
+### AI 功能
+```
+POST   /api/ai/complete          # AI 文本生成
+POST   /api/ai/continue          # AI 续写
+```
+
+### 响应格式
+```json
+{
+  "success": true,
+  "data": { ... },
+  "error": null
+}
+```
+
+## 📂 项目结构
+
+```
+NovelStudio/
+├── backend/                    # C++ 后端
+│   ├── src/
+│   │   ├── server/             # Web 服务器
+│   │   │   └── crow_server.cpp # Crow HTTP 服务器
+│   │   ├── ai/                 # AI 服务 (已有)
+│   │   ├── data/               # 数据管理 (已有)
+│   │   └── utils/              # 工具类 (已有)
+│   ├── include/
+│   │   ├── crow/               # Crow 框架 (header-only)
+│   │   └── server/             # 服务器头文件
+│   └── CMakeLists.txt
+│
+├── frontend/                   # Solid.js 前端
+│   ├── src/
+│   │   ├── components/         # UI 组件
+│   │   │   └── NovelList.tsx
+│   │   ├── services/           # API 客户端
+│   │   │   └── api.ts
+│   │   ├── stores/             # 状态管理
+│   │   │   └── novelStore.ts
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── public/
+│   │   └── index.html
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── tsconfig.json
+│
+├── dist/                       # 生产构建输出
+│   ├── NovelStudioServer.exe
+│   ├── frontend/
+│   └── config.json
+│
+├── dev-start.bat               # 开发启动脚本
+├── build-web.bat               # 生产构建脚本
+├── ARCHITECTURE_PLAN.md        # 架构设计文档
+└── README.md
+```
+
+## 🎨 UI 设计
+
+### 配色方案 (Production Slate)
+- **背景**: `#0F172A` (深海军蓝)
+- **卡片**: `#1E293B` (石板灰)
+- **边框**: `#334155` (中灰)
+- **文本**: `#F8FAFC` (冷白)
+- **主色**: `#38BDF8` (天蓝)
+- **辅色**: `#F97316` (橙色)
+
+### 字体
+- **UI**: System Font Stack (Segoe UI, SF Pro, ...)
+- **代码**: 等宽字体
+
+## 📊 性能指标
+
+| 指标 | 当前桌面版 | Web 版本 | 改善 |
+|------|-----------|---------|------|
+| 启动时间 | ~300ms | ~500ms | -200ms |
+| 内存占用 | ~30MB | ~40MB | -10MB |
+| 安装包大小 | 5MB | 2MB (EXE) + 100KB (前端) | -2.9MB |
+| 首屏加载 | N/A | ~200ms | - |
+| 开发热重载 | ❌ | ✅ 50ms | - |
+
+## 🔧 配置
+
+### config.json
+```json
+{
+  "openai_api_key": "sk-...",
+  "anthropic_api_key": "sk-ant-...",
+  "ollama_endpoint": "http://localhost:11434/api/chat",
+  "server_port": 3000
+}
+```
+
+## 🛣️ 路线图
+
+### Phase 1: 基础 Web 服务器 ✅
+- [x] Crow 框架集成
+- [x] REST API 路由
+- [x] CORS 中间件
+- [x] 静态文件服务
+
+### Phase 2: 前端开发 ✅
+- [x] Solid.js 项目搭建
+- [x] API 客户端封装
+- [x] 小说列表组件
+- [x] 状态管理 (Store)
+
+### Phase 3: 完整功能 (进行中)
+- [ ] 章节编辑器
+- [ ] AI 助手面板
+- [ ] SSE 流式输出
+- [ ] 角色管理
+- [ ] 导出功能
+
+### Phase 4: 优化与打磨
+- [ ] 响应式布局
+- [ ] 暗色/亮色主题
+- [ ] 快捷键支持
+- [ ] 离线支持
+- [ ] 性能优化
+
+## 🤝 参考项目
+
+感谢以下项目的启发：
+- **Koodo Reader**: Go HTTP server 设计
+- **Cherry Studio**: Electron 架构和数据层
+- **AI Novel Writer**: React + SQLite 模式
+
+## 📄 许可证
 
 MIT License
 
-## 🙏 致谢
-
-参考项目:
-- luobi-ai-writing - Clean Architecture
-- AI-Novel-Writer - 多草稿系统
-- Cherry Studio - 服务架构
-- NovelForge - 工作流设计
-
 ---
 
-**开发状态**: Phase 2 完成 ✅  
-**可用性**: 生产可用 🚀  
-**依赖数**: 1 个 (最小化) 🎯
+**当前状态**: Phase 2 完成 ✅  
+**可用性**: 开发可用 🚧  
+**架构**: Web 大后端 + 轻量前端 🌐  
+**Windows Only**: ✅

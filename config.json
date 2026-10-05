@@ -1,0 +1,9 @@
+{
+  "openai_api_key": "sk-your-openai-key-here",
+  "openai_endpoint": "https://api.openai.com/v1/chat/completions",
+  "anthropic_api_key": "sk-ant-your-anthropic-key-here",
+  "anthropic_endpoint": "https://api.anthropic.com/v1/messages",
+  "ollama_endpoint": "http://localhost:11434/api/chat",
+  "database_path": "novelstudio.db",
+  "log_level": "info"
+}

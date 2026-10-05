@@ -12,12 +12,19 @@
 
 ## 🚀 快速开始
 
-### 一键启动
+### 方式一: 一键启动（推荐）
 ```bash
 start.bat
 ```
+交互式菜单，选择不同的演示程序运行。
 
-### 手动构建
+### 方式二: 完整首次构建
+```bash
+setup-and-build.bat
+```
+自动安装 vcpkg、依赖项并构建项目（首次使用）。
+
+### 方式三: 手动构建
 ```bash
 # 配置
 cmake -G "Visual Studio 18 2026" -A x64 -B build
@@ -25,8 +32,8 @@ cmake -G "Visual Studio 18 2026" -A x64 -B build
 # 构建
 cmake --build build --config Release
 
-# 运行
-build\bin\Release\DemoWorkflow.exe
+# 快速重新编译（开发时）
+quick-build.bat
 ```
 
 ### 配置 API Keys
@@ -34,6 +41,15 @@ build\bin\Release\DemoWorkflow.exe
 copy config.example.json config.json
 # 编辑 config.json，填入你的 API keys
 ```
+
+## 🔧 工具脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `start.bat` | 主入口 - 交互式菜单 |
+| `setup-and-build.bat` | 首次完整构建（含依赖安装）|
+| `quick-build.bat` | 快速重新编译（开发用）|
+| `quick_test.bat` | 运行所有测试 |
 
 ## 📦 可执行程序
 
@@ -159,10 +175,12 @@ cmake --build build --config Release --target TestNative
 
 ## 📚 文档
 
-- [开发总结](DEVELOPMENT_SUMMARY.md) - 完整开发过程
-- [进度追踪](PROGRESS.md) - Phase 1-2 完成情况
+- [架构设计](docs/ARCHITECTURE.md) - 系统架构
+- [开发指南](docs/DEVELOPMENT.md) - 开发环境设置
 - [原生实现](docs/NATIVE_IMPLEMENTATION.md) - HTTP/JSON 实现细节
 - [依赖说明](docs/DEPENDENCIES.md) - 依赖减少策略
+- [功能路线图](docs/ROADMAP.md) - 未来计划
+- [UI 设计](docs/UI_DESIGN.md) - UI 规范
 
 ## 🎯 路线图
 

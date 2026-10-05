@@ -219,8 +219,129 @@ bool HttpClient::PostStreaming(
     const std::map<std::string, std::string>& headers,
     StreamCallback callback
 ) {
-    // TODO: Implement streaming with Server-Sent Events
+#ifdef _WIN32
+    if (!impl_->hSession) {
+        return false;
+    }
+
+    // Parse URL
+    std::wstring wUrl = StringToWide(url);
+    URL_COMPONENTS urlComp = {};
+    urlComp.dwStructSize = sizeof(urlComp);
+
+    wchar_t hostName[256] = {};
+    wchar_t urlPath[1024] = {};
+    urlComp.lpszHostName = hostName;
+    urlComp.dwHostNameLength = sizeof(hostName) / sizeof(wchar_t);
+    urlComp.lpszUrlPath = urlPath;
+    urlComp.dwUrlPathLength = sizeof(urlPath) / sizeof(wchar_t);
+
+    if (!WinHttpCrackUrl(wUrl.c_str(), 0, 0, &urlComp)) {
+        return false;
+    }
+
+    // Connect
+    HINTERNET hConnect = WinHttpConnect(
+        impl_->hSession,
+        hostName,
+        urlComp.nPort,
+        0
+    );
+
+    if (!hConnect) {
+        return false;
+    }
+
+    // Open request
+    DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect,
+        L"POST",
+        urlPath,
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        flags
+    );
+
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        return false;
+    }
+
+    // Set longer timeout for streaming
+    int streamTimeout = 300000; // 5 minutes
+    WinHttpSetTimeouts(hRequest, timeoutMs_, timeoutMs_, streamTimeout, streamTimeout);
+
+    // Add headers
+    std::wstring allHeaders;
+    for (const auto& [key, value] : headers) {
+        allHeaders += StringToWide(key) + L": " + StringToWide(value) + L"\r\n";
+    }
+
+    if (!allHeaders.empty()) {
+        WinHttpAddRequestHeaders(
+            hRequest,
+            allHeaders.c_str(),
+            -1,
+            WINHTTP_ADDREQ_FLAG_ADD
+        );
+    }
+
+    // Send request
+    BOOL result = WinHttpSendRequest(
+        hRequest,
+        WINHTTP_NO_ADDITIONAL_HEADERS,
+        0,
+        (LPVOID)body.c_str(),
+        body.length(),
+        body.length(),
+        0
+    );
+
+    if (!result) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        return false;
+    }
+
+    // Receive response
+    if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        return false;
+    }
+
+    // Stream response chunks
+    bool success = true;
+    DWORD bytesAvailable = 0;
+    do {
+        bytesAvailable = 0;
+        if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
+            success = false;
+            break;
+        }
+
+        if (bytesAvailable > 0) {
+            std::vector<char> buffer(bytesAvailable);
+            DWORD bytesRead = 0;
+            if (WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead)) {
+                std::string chunk(buffer.data(), bytesRead);
+                callback(chunk);
+            } else {
+                success = false;
+                break;
+            }
+        }
+    } while (bytesAvailable > 0);
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+
+    return success;
+#else
     return false;
+#endif
 }
 
 } // namespace NovelStudio

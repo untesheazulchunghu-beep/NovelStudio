@@ -33,7 +33,7 @@ include_directories(${PROJECT_SOURCE_DIR}/third_party)
 # Source files
 file(GLOB_RECURSE CORE_SOURCES "src/core/*.cpp")
 file(GLOB_RECURSE UI_SOURCES "src/ui/*.cpp")
-file(GLOB_RECURSE AI_SOURCES "src/ai/*.cpp")
+file(GLOB AI_SOURCES "src/ai/*.cpp")
 file(GLOB_RECURSE DATABASE_SOURCES "src/database/*.cpp")
 file(GLOB_RECURSE UTILS_SOURCES "src/utils/*.cpp")
 
@@ -87,6 +87,38 @@ add_executable(TestNative
 
 if(WIN32)
     target_compile_definitions(TestNative PRIVATE UNICODE _UNICODE)
+endif()
+
+# Test executable for streaming AI (no SQLite3 needed)
+add_executable(TestStreaming
+    src/test_streaming.cpp
+    src/ai/ai_provider_native.cpp
+    src/ai/ai_providers_extended.cpp
+    src/ai/ai_provider_factory.cpp
+    src/utils/http_client.cpp
+    src/utils/json_utils.cpp
+    src/utils/sse_parser.cpp
+    src/utils/logger.cpp
+)
+
+if(WIN32)
+    target_compile_definitions(TestStreaming PRIVATE UNICODE _UNICODE)
+endif()
+
+# Test executable for all AI providers
+add_executable(TestProviders
+    src/test_providers.cpp
+    src/ai/ai_provider_native.cpp
+    src/ai/ai_providers_extended.cpp
+    src/ai/ai_provider_factory.cpp
+    src/utils/http_client.cpp
+    src/utils/json_utils.cpp
+    src/utils/sse_parser.cpp
+    src/utils/logger.cpp
+)
+
+if(WIN32)
+    target_compile_definitions(TestProviders PRIVATE UNICODE _UNICODE)
 endif()
 
 # Tests

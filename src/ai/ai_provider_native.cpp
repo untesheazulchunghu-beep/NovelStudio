@@ -1,6 +1,7 @@
 #include "ai_provider.h"
 #include "http_client.h"
 #include "json_utils.h"
+#include "sse_parser.h"
 #include "logger.h"
 #include <sstream>
 
@@ -12,13 +13,13 @@ std::unique_ptr<AIProvider> AIProvider::CreateOpenAI() {
 }
 
 std::unique_ptr<AIProvider> AIProvider::CreateAnthropic() {
-    // TODO: Implement Anthropic provider
-    return nullptr;
+    extern std::unique_ptr<AIProvider> CreateAnthropicProviderImpl();
+    return CreateAnthropicProviderImpl();
 }
 
 std::unique_ptr<AIProvider> AIProvider::CreateLocal() {
-    // TODO: Implement local model provider (Ollama)
-    return nullptr;
+    extern std::unique_ptr<AIProvider> CreateLocalProviderImpl();
+    return CreateLocalProviderImpl();
 }
 
 // OpenAI implementation using native HTTP client
@@ -115,12 +116,97 @@ void OpenAIProvider::CompleteStreaming(
     StreamCallback callback,
     const CompletionOptions& options
 ) {
-    // For now, fallback to non-streaming
-    // TODO: Implement SSE streaming with WinHTTP
-    LOG_WARNING("Streaming not yet implemented, using non-streaming fallback");
-    std::string result = Complete(messages, options);
-    if (!result.empty()) {
-        callback(result);
+    if (apiKey_.empty()) {
+        LOG_ERROR("API key not set");
+        return;
+    }
+
+    // Build JSON request with streaming enabled
+    JsonValue request = JsonValue::Object();
+    request["model"] = JsonValue(options.model);
+    request["temperature"] = JsonValue(options.temperature);
+    request["max_tokens"] = JsonValue(options.maxTokens);
+    request["top_p"] = JsonValue(options.topP);
+    request["frequency_penalty"] = JsonValue(options.frequencyPenalty);
+    request["presence_penalty"] = JsonValue(options.presencePenalty);
+    request["stream"] = JsonValue(true); // Enable streaming
+
+    JsonValue messagesJson = JsonValue::Array();
+    for (const auto& msg : messages) {
+        JsonValue msgJson = JsonValue::Object();
+
+        switch (msg.role) {
+            case AIMessage::Role::System:
+                msgJson["role"] = JsonValue("system");
+                break;
+            case AIMessage::Role::User:
+                msgJson["role"] = JsonValue("user");
+                break;
+            case AIMessage::Role::Assistant:
+                msgJson["role"] = JsonValue("assistant");
+                break;
+        }
+        msgJson["content"] = JsonValue(msg.content);
+        messagesJson.Push(msgJson);
+    }
+    request["messages"] = messagesJson;
+
+    std::string requestBody = request.ToString();
+
+    LOG_DEBUG("Sending streaming request to OpenAI API");
+
+    // Use native HTTP client with streaming
+    HttpClient client;
+    std::map<std::string, std::string> headers;
+    headers["Content-Type"] = "application/json";
+    headers["Authorization"] = "Bearer " + apiKey_;
+    headers["Accept"] = "text/event-stream";
+
+    // Setup SSE parser
+    SSEParser parser;
+    std::string fullText;
+
+    parser.OnData([&](const std::string& data) {
+        try {
+            // Parse JSON chunk
+            JsonValue chunk = JsonValue::Parse(data);
+
+            if (chunk.Has("choices") && chunk["choices"].Size() > 0) {
+                JsonValue choice = chunk["choices"][0];
+
+                if (choice.Has("delta")) {
+                    JsonValue delta = choice["delta"];
+
+                    if (delta.Has("content")) {
+                        std::string content = delta["content"].AsString();
+                        if (!content.empty()) {
+                            fullText += content;
+                            callback(content);
+                        }
+                    }
+                }
+
+                // Check finish reason
+                if (choice.Has("finish_reason") && !choice["finish_reason"].IsNull()) {
+                    LOG_DEBUG("Stream finished: " + choice["finish_reason"].AsString());
+                }
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to parse streaming chunk: " + std::string(e.what()));
+        }
+    });
+
+    // Stream the response
+    bool success = client.PostStreaming(endpoint_, requestBody, headers,
+        [&](const std::string& chunk) {
+            parser.Feed(chunk.data(), chunk.length());
+        }
+    );
+
+    if (!success) {
+        LOG_ERROR("Streaming request failed");
+    } else {
+        LOG_DEBUG("Streaming complete, total length: " + std::to_string(fullText.length()));
     }
 }
 

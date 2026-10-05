@@ -1,7 +1,16 @@
-import { createEffect, For, Show } from 'solid-js';
+import { createEffect, createSignal, For, Show } from 'solid-js';
 import { novelStore } from '../stores/novelStore';
+import ChapterEditor from './ChapterEditor';
+import CharacterPanel from './CharacterPanel';
+import AIAssistant from './AIAssistant';
 
 export default function NovelList() {
+  const [selectedNovelId, setSelectedNovelId] = createSignal<number | null>(null);
+  const [selectedNovelTitle, setSelectedNovelTitle] = createSignal('');
+  const [showChapterEditor, setShowChapterEditor] = createSignal(false);
+  const [showCharacterPanel, setShowCharacterPanel] = createSignal(false);
+  const [showAIAssistant, setShowAIAssistant] = createSignal(false);
+
   createEffect(() => {
     novelStore.loadNovels();
   });
@@ -29,43 +38,74 @@ export default function NovelList() {
     }
   };
 
+  const handleOpenChapters = (novelId: number, novelTitle: string) => {
+    setSelectedNovelId(novelId);
+    setSelectedNovelTitle(novelTitle);
+    setShowChapterEditor(true);
+  };
+
+  const handleOpenCharacters = (novelId: number) => {
+    setSelectedNovelId(novelId);
+    setShowCharacterPanel(true);
+  };
+
   return (
-    <div style={{
-      padding: '2rem',
-      'max-width': '1200px',
-      margin: '0 auto',
-    }}>
+    <>
       <div style={{
-        display: 'flex',
-        'justify-content': 'space-between',
-        'align-items': 'center',
-        'margin-bottom': '2rem',
+        padding: '2rem',
+        'max-width': '1400px',
+        margin: '0 auto',
       }}>
-        <h1 style={{
-          'font-size': '2rem',
-          'font-weight': '700',
-          color: '#F8FAFC',
+        <div style={{
+          display: 'flex',
+          'justify-content': 'space-between',
+          'align-items': 'center',
+          'margin-bottom': '2rem',
         }}>
-          My Novels
-        </h1>
-        <button
-          onClick={handleCreate}
-          style={{
-            padding: '0.75rem 1.5rem',
-            background: '#38BDF8',
-            color: '#0F172A',
-            border: 'none',
-            'border-radius': '8px',
-            'font-weight': '600',
-            cursor: 'pointer',
-            transition: 'all 0.2s',
-          }}
-          onMouseOver={(e) => e.currentTarget.style.background = '#0EA5E9'}
-          onMouseOut={(e) => e.currentTarget.style.background = '#38BDF8'}
-        >
-          + New Novel
-        </button>
-      </div>
+          <h1 style={{
+            'font-size': '2rem',
+            'font-weight': '700',
+            color: '#F8FAFC',
+          }}>
+            My Novels
+          </h1>
+          <div style={{ display: 'flex', gap: '1rem' }}>
+            <button
+              onClick={() => setShowAIAssistant(true)}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: '#F97316',
+                color: '#0F172A',
+                border: 'none',
+                'border-radius': '8px',
+                'font-weight': '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+              }}
+              onMouseOver={(e) => e.currentTarget.style.background = '#EA580C'}
+              onMouseOut={(e) => e.currentTarget.style.background = '#F97316'}
+            >
+              🤖 AI Assistant
+            </button>
+            <button
+              onClick={handleCreate}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: '#38BDF8',
+                color: '#0F172A',
+                border: 'none',
+                'border-radius': '8px',
+                'font-weight': '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+              }}
+              onMouseOver={(e) => e.currentTarget.style.background = '#0EA5E9'}
+              onMouseOut={(e) => e.currentTarget.style.background = '#38BDF8'}
+            >
+              + New Novel
+            </button>
+          </div>
+        </div>
 
       <Show when={novelStore.loading()}>
         <p style={{ color: '#94A3B8' }}>Loading...</p>
@@ -132,6 +172,41 @@ export default function NovelList() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    handleOpenChapters(novel.id, novel.title);
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: '#38BDF8',
+                    border: 'none',
+                    'border-radius': '6px',
+                    color: '#0F172A',
+                    'font-size': '0.875rem',
+                    'font-weight': '600',
+                    cursor: 'pointer',
+                  }}
+                >
+                  📝 Chapters
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenCharacters(novel.id);
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: 'transparent',
+                    border: '1px solid #38BDF8',
+                    'border-radius': '6px',
+                    color: '#38BDF8',
+                    'font-size': '0.875rem',
+                    cursor: 'pointer',
+                  }}
+                >
+                  👥 Characters
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
                     handleDelete(novel.id, novel.title);
                   }}
                   style={{
@@ -152,5 +227,26 @@ export default function NovelList() {
         </For>
       </div>
     </div>
+
+    {/* Modals */}
+    <Show when={showChapterEditor()}>
+      <ChapterEditor
+        novelId={selectedNovelId()!}
+        novelTitle={selectedNovelTitle()}
+        onClose={() => setShowChapterEditor(false)}
+      />
+    </Show>
+
+    <Show when={showCharacterPanel()}>
+      <CharacterPanel
+        novelId={selectedNovelId()!}
+        onClose={() => setShowCharacterPanel(false)}
+      />
+    </Show>
+
+    <Show when={showAIAssistant()}>
+      <AIAssistant onClose={() => setShowAIAssistant(false)} />
+    </Show>
+  </>
   );
 }

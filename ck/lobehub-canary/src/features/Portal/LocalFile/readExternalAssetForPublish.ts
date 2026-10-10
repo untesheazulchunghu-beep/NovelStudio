@@ -1,1 +1,0 @@
-export { readExternalAssetForPublish } from './readWorkspaceAsset';

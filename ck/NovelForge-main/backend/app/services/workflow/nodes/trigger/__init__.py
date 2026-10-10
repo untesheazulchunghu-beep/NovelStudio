@@ -1,2 +1,0 @@
-from .project_created import TriggerProjectCreatedNode
-from .card_saved import TriggerCardSavedNode

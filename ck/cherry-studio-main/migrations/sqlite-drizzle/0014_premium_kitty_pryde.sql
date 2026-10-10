@@ -1,1 +1,0 @@
-ALTER TABLE `user_model` ADD `input_modalities_explicit` integer DEFAULT false NOT NULL;

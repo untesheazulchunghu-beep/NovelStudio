@@ -1,2 +1,0 @@
-CREATE INDEX `agent_session_message_created_at_id_idx` ON `agent_session_message` ("created_at" desc,"id" asc);--> statement-breakpoint
-CREATE INDEX `message_created_at_id_idx` ON `message` ("created_at" desc,"id" asc);

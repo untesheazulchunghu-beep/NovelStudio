@@ -25,3 +25,6 @@ frontend/vite.config.d.ts
 .idea/
 Thumbs.db
 Desktop.ini
+
+# Third-party reference copies (not part of this project; keep on disk, untracked)
+/ck/

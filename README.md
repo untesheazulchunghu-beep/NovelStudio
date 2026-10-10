@@ -1,263 +1,98 @@
-# NovelStudio Web
+# NovelStudio
 
-**Windows 原生 C++ 后端 + Solid.js 轻量前端的 AI 小说写作平台**
+NovelStudio 是一个面向长篇小说创作的单用户 Agent 工作台，支持在一个本地数据库中创建和切换多个小说项目。界面借鉴 Visual Studio Code：左侧是当前项目树和角色/便笺，中央是章节编辑器，右侧是可以切换为对话、大纲、上下文的写作 Agent。
 
-## ✨ 新架构特性
+当前版本先把本地单用户闭环跑通：多个小说项目及其章节、角色、便笺、对话和模型设置保存在 `data/novelstudio.db`，使用 SQLite 文件，不需要额外数据库服务。旧版 `data/workspace.json` 会在首次启动时导入，原 JSON 文件保留为备份。每个项目通过独立的工作区 ID 隔离；后续可以在 API 层增加用户身份。
 
-- 🌐 **Web 界面**: 浏览器访问，现代化 UI
-- ⚡ **C++ 后端**: 高性能 REST API + SSE 流式
-- 🪶 **轻量前端**: Solid.js (~7KB)，极速响应
-- 🔥 **热重载**: 前端修改即时生效
-- 💾 **零安装**: 单个 EXE + 配置文件
+## 快速启动
 
-## 🚀 快速开始
+需要 Go 1.23+、Node.js 20+。SQLite 由纯 Go 驱动提供，无需在 Windows 上另外安装 SQLite 或 C 编译器。
 
-### 开发模式
+```powershell
+# 终端 1：Go API（8080）
+go run ./cmd/novelstudio
 
-```bash
-# 一键启动后端 + 前端
-dev-start.bat
-
-# 后端: http://localhost:3000
-# 前端: http://localhost:5173
-```
-
-### 生产构建
-
-```bash
-# 构建前端 + 后端
-build-web.bat
-
-# 运行
-cd dist
-NovelStudioServer.exe
-
-# 访问: http://localhost:3000
-```
-
-### 手动构建
-
-#### 后端
-```bash
-cd backend
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
-```
-
-#### 前端
-```bash
+# 终端 2：React/Vite（5173）
 cd frontend
 npm install
-npm run dev         # 开发模式
-npm run build       # 生产构建
+npm run dev
 ```
 
-## 📐 架构设计
+打开 <http://localhost:5173>。生产构建可以执行：
 
-```
-┌─────────────────────────────────────┐
-│  浏览器 (localhost:5173)             │
-│  Solid.js + TypeScript              │
-│  - 轻量 UI (7KB)                    │
-│  - 响应式设计                        │
-│  - 实时预览                          │
-└──────────────┬──────────────────────┘
-               │ HTTP/SSE
-┌──────────────▼──────────────────────┐
-│  C++ Web Server (Port 3000)        │
-│  Crow Framework                     │
-│  ├─ REST API                        │
-│  ├─ SSE Streaming                   │
-│  ├─ Static Files                    │
-│  └─ CORS Middleware                 │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│  业务逻辑 (已有)                     │
-│  ├─ AIService                       │
-│  ├─ DataManager                     │
-│  └─ ConfigManager                   │
-└─────────────────────────────────────┘
+```powershell
+cd frontend
+npm run build
+cd ..
+New-Item -ItemType Directory -Force bin | Out-Null
+go build -o bin/novelstudio.exe ./cmd/novelstudio
+bin/novelstudio.exe
 ```
 
-## 🛠️ 技术栈
+构建后的 Go 服务会从 `frontend/dist` 提供静态页面，也可以用 `-web` 指定目录。开发时 Vite 会把 `/api` 代理到 `http://127.0.0.1:8080`。
 
-### 后端
-- **语言**: C++20
-- **框架**: Crow (header-only HTTP 框架)
-- **依赖**: Boost, SQLite3 (可选)
-- **特性**: REST API, SSE 流式, 静态文件服务
+开发代理目标可以通过 `NOVELSTUDIO_API_TARGET` 覆盖，适合在默认 API 端口已被占用时并行启动本项目。
 
-### 前端
-- **框架**: Solid.js 1.9+ (无虚拟 DOM)
-- **构建**: Vite 6.0
-- **语言**: TypeScript
-- **HTTP**: ky (轻量 fetch 封装)
-- **包大小**: < 50KB (gzipped)
+使用 `build-web.bat` 构建后，可以从仓库根目录或 `bin` 目录启动 `novelstudio.exe`；默认数据库和前端目录会按应用目录定位。按 Ctrl+C 退出时，服务会等待进行中的请求结束，最多等待 10 秒。
 
-## 📡 API 端点
+需要 Windows 便携包时，运行 `powershell -ExecutionPolicy Bypass -File .\package-portable.ps1`。脚本在 `release/NovelStudio-portable.zip` 生成包含服务、前端静态文件、README 和许可证的压缩包，不会打包本地数据库；如果目标输出已存在，脚本会停止以免覆盖旧包。
 
-### Novel 管理
+服务启动选项可以通过命令行参数或环境变量设置：`-addr` / `NOVELSTUDIO_ADDR` 指定监听地址，`-data` / `NOVELSTUDIO_DATA` 指定 SQLite 文件，`-web` / `NOVELSTUDIO_WEB` 指定前端构建目录。命令行参数优先于环境变量；默认数据库和前端目录位于应用目录下。模型服务商、模型名称和 API Key 在界面的“设置”中按项目保存到本地数据库。
+
+## 功能
+
+- **章节工作区**：章节树、标题和本章目标、正文编辑、字数统计、自动保存、`⌘/Ctrl + S` 保存；编辑器支持 `Tab / Shift + Tab` 缩进或反向缩进选中行；临时保存失败后会自动退避重试，编辑内容变化时重新计时；可删除章节并用上下移动按钮调整顺序。
+- **章节版本**：作者可为当前章节保存检查点、预览正文、与打开版本窗口时的当前稿并排对照，并恢复历史版本；每章最多保留最近 20 个版本。恢复前系统会自动保存当前稿，版本也包含在项目备份中。
+- **出版导出**：将当前项目按章节顺序导出为 Markdown（`.md`）、Word 文档（`.docx`）或 EPUB 电子书（`.epub`）；这些格式都包含当前编辑器中尚未自动保存的章节标题和正文。
+- **项目备份与恢复**：可导出包含项目资料、章节及版本、角色、便笺、最近 60 条对话和模型设置的 JSON 备份，并将备份作为新项目导入；为避免把凭据写入备份，API Key、接口地址中的用户名/密码和凭据类查询参数都会移除，恢复后请检查模型设置。
+- **快速搜索与帮助**：点击顶部搜索框或按 `Ctrl/⌘ + K` 搜索当前项目的章节正文、角色和便笺（包括当前章节未保存的编辑），也可通过命令快速新建内容、切换设置、导出 Markdown/Word/EPUB/备份或导入备份；帮助面板列出常用键盘操作。
+- **多项目管理**：从顶部选择器切换小说项目，或新建项目；可修改项目名称、副标题、题材、故事设定和目标字数；每个项目有独立的章节、上下文、聊天记录和模型设置，切换项目时未发送的 Agent 输入会在当前页面会话中保留。
+- **Agent 四种模式**：写作、规划、审阅、改写；对话会带入当前项目设定、章节摘要、角色、最近编辑内容、编辑器选区及其附近正文，聊天记录会标出 Agent 回复所用的模式。改写模式需要先选中不超过 1800 字的正文，Agent 给出替换稿后可在预览中调整，再由作者确认应用；应用前会再次确认选区原文和附近正文未变化。本地规则引擎会提示配置兼容模型。单条输入最多 8000 个字符，进行中的模型请求可以取消。
+- **正文生成**：点击「AI 续写」把生成内容追加到当前章节，也可以在聊天中请求续写、摘要或润色。
+- **项目上下文**：查看项目设定，并创建、编辑和删除角色档案与分类便笺；这些资料会进入 Agent 对话上下文，减少长篇写作中的设定漂移。
+- **模型设置**：默认使用本地规则引擎；设置为 `openai` 或 `compatible` 后，可填写 OpenAI 兼容接口和模型。`openai` 服务商需要 API Key；`compatible` 服务商可按接口要求填写，本机免鉴权接口可以留空。密钥保存在本地数据库，读取设置时只返回是否已配置；留空会保留现有密钥，也可以显式清除。
+- **本地持久化**：Go 后端以 SQLite 事务保存项目、章节、角色、便笺、对话和设置，重启后保留工作区。
+
+## API 概览
+
+开发阶段与后续里程碑见[开发路线图](docs/ROADMAP.md)；发布前请按[验收清单](docs/RELEASE_CHECKLIST.md)检查运行包和数据迁移。
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET/POST | `/api/projects` | 列出项目或新建小说项目 |
+| POST | `/api/projects/import` | 将版本化 JSON 备份恢复为新项目 |
+| PUT | `/api/projects/:workspace_id` | 更新项目资料和目标字数 |
+| DELETE | `/api/projects/:workspace_id` | 删除项目及其全部数据；不能删除最后一个项目 |
+| GET | `/api/workspace` | 读取工作区和章节目录摘要；章节正文按需读取 |
+| GET | `/api/workspace/backup` | 下载当前项目的版本化 JSON 备份（移除 API Key 和接口地址中的凭据） |
+| POST | `/api/workspace/export/markdown` | 导出完整 Markdown，并合并当前章节未保存的标题和正文 |
+| POST | `/api/workspace/export/docx` | 导出 Word 文档，并合并请求中当前章节的未保存正文 |
+| POST | `/api/workspace/export/epub` | 导出带目录和章节导航的 EPUB，并合并当前章节的未保存正文 |
+| GET | `/api/health` | 服务健康检查 |
+| POST/PUT/DELETE | `/api/chapters`、`/api/chapters/:id` | 章节 CRUD |
+| GET | `/api/chapters/:id` | 按需读取单章正文 |
+| GET | `/api/chapters/search?q=...` | 搜索章节标题、摘要和正文，返回匹配片段 |
+| PUT | `/api/chapters/order` | 按 `chapter_ids` 顺序调整章节编号 |
+| POST | `/api/chapters/:id/generate` | 生成当前章节正文；可带入编辑器中的标题、目标和正文 |
+| GET/POST | `/api/chapters/:id/revisions` | 查看版本摘要或为当前章节保存版本 |
+| GET | `/api/chapters/:id/revisions/:revision_id` | 读取一个版本的完整正文 |
+| POST | `/api/chapters/:id/revisions/:revision_id/restore` | 恢复版本，并自动保存恢复前内容 |
+| POST | `/api/chat` | Agent 对话并持久化消息 |
+| GET/PUT | `/api/settings` | 模型服务设置 |
+| GET/POST | `/api/characters`、`/api/notes` | 读取或新增上下文资料 |
+| GET/PUT/DELETE | `/api/characters/:id`、`/api/notes/:id` | 读取、修改或删除上下文资料 |
+
+工作区 API 使用 `X-Workspace-ID` 请求头选择项目；缺少该请求头时使用 `default` 工作区。`GET /api/projects` 返回每个项目的 `workspace_id`，调用方应将其作为不透明标识使用。创建和更新项目的请求体可包含 `title`、`subtitle`、`genre`、`premise` 和 `word_target`。对话和续写请求可以传入尚未保存的 `chapter_title`、`chapter_summary` 和 `context`，让 Agent 使用当前编辑器中的内容。DOCX 和 EPUB 导出从 SQLite 读取项目和章节，并通过请求体覆盖当前章节标题与正文，避免等待自动保存后再导出。EPUB 包含标题页、目录、章节 XHTML 和样式表。章节版本按章节隔离；恢复操作在同一 SQLite 事务中保存恢复前的章节并更新正文。对话请求可带 `request_id`；同一提交重试时应复用该 ID，服务端按请求指纹返回已保存的用户消息和 Agent 回复。请求结果单独保存在 SQLite，因此聊天窗口裁剪到最近 60 条后，重试仍会返回原回复；结果保留到项目删除。同一进程会按数据库共享请求锁；不同进程通过 SQLite 租约协调相同请求，等待者会复用已保存回复。租约为两分钟，进程异常退出后可在到期后接管；租约失效的旧持有者不能提交结果。若模型调用异常长于租约，仍可能出现重复调用，但 SQLite 只接受一份回复。已校验为不同内容的 ID 会返回 HTTP 409（`chat_request_conflict`）；命中相同用户消息但旧记录没有指纹时会返回 `chat_request_unverifiable`，前端保留输入并要求先检查聊天记录；用户显式确认后才会使用新 ID 重发。若网络中断导致结果无法确认，前端会保留原请求并先同步聊天记录；确认记录中没有该请求后才开放同 ID 重试。删除项目会级联删除其章节版本、章节、角色、便笺、聊天记录、请求结果和模型设置，并至少保留一个项目。
+
+## 参考项目
+
+`ck/AI-Novel-Writer-master` 和 `ck/luobi-ai-writing-main` 提供了长篇创作流程、版本留存、作者确认与 IDE 式布局参考；本项目以轻量的章节检查点和恢复保护承接版本管理思路，代码和数据结构独立实现。
+
+## 目录
+
+```text
+cmd/novelstudio/       Go 入口和 HTTP 服务
+internal/app/          工作区模型、SQLite store、API 路由和 Agent
+frontend/src/          React 工作台、API 客户端和主题样式
+data/                  运行时 SQLite 数据库（首次启动自动创建，不提交）
 ```
-GET    /api/novels              # 获取所有小说
-POST   /api/novels              # 创建小说
-GET    /api/novels/:id          # 获取单个小说
-PUT    /api/novels/:id          # 更新小说
-DELETE /api/novels/:id          # 删除小说
-GET    /api/novels/:id/stats    # 获取统计
-```
-
-### Chapter 管理
-```
-GET    /api/novels/:id/chapters   # 获取章节列表
-POST   /api/novels/:id/chapters   # 创建章节
-PUT    /api/chapters/:id          # 更新章节
-DELETE /api/chapters/:id          # 删除章节
-```
-
-### Character 管理
-```
-GET    /api/novels/:id/characters # 获取角色列表
-POST   /api/novels/:id/characters # 创建角色
-```
-
-### AI 功能
-```
-POST   /api/ai/complete          # AI 文本生成
-POST   /api/ai/continue          # AI 续写
-```
-
-### 响应格式
-```json
-{
-  "success": true,
-  "data": { ... },
-  "error": null
-}
-```
-
-## 📂 项目结构
-
-```
-NovelStudio/
-├── backend/                    # C++ 后端
-│   ├── src/
-│   │   ├── server/             # Web 服务器
-│   │   │   └── crow_server.cpp # Crow HTTP 服务器
-│   │   ├── ai/                 # AI 服务 (已有)
-│   │   ├── data/               # 数据管理 (已有)
-│   │   └── utils/              # 工具类 (已有)
-│   ├── include/
-│   │   ├── crow/               # Crow 框架 (header-only)
-│   │   └── server/             # 服务器头文件
-│   └── CMakeLists.txt
-│
-├── frontend/                   # Solid.js 前端
-│   ├── src/
-│   │   ├── components/         # UI 组件
-│   │   │   └── NovelList.tsx
-│   │   ├── services/           # API 客户端
-│   │   │   └── api.ts
-│   │   ├── stores/             # 状态管理
-│   │   │   └── novelStore.ts
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── public/
-│   │   └── index.html
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── tsconfig.json
-│
-├── dist/                       # 生产构建输出
-│   ├── NovelStudioServer.exe
-│   ├── frontend/
-│   └── config.json
-│
-├── dev-start.bat               # 开发启动脚本
-├── build-web.bat               # 生产构建脚本
-├── ARCHITECTURE_PLAN.md        # 架构设计文档
-└── README.md
-```
-
-## 🎨 UI 设计
-
-### 配色方案 (Production Slate)
-- **背景**: `#0F172A` (深海军蓝)
-- **卡片**: `#1E293B` (石板灰)
-- **边框**: `#334155` (中灰)
-- **文本**: `#F8FAFC` (冷白)
-- **主色**: `#38BDF8` (天蓝)
-- **辅色**: `#F97316` (橙色)
-
-### 字体
-- **UI**: System Font Stack (Segoe UI, SF Pro, ...)
-- **代码**: 等宽字体
-
-## 📊 性能指标
-
-| 指标 | 当前桌面版 | Web 版本 | 改善 |
-|------|-----------|---------|------|
-| 启动时间 | ~300ms | ~500ms | -200ms |
-| 内存占用 | ~30MB | ~40MB | -10MB |
-| 安装包大小 | 5MB | 2MB (EXE) + 100KB (前端) | -2.9MB |
-| 首屏加载 | N/A | ~200ms | - |
-| 开发热重载 | ❌ | ✅ 50ms | - |
-
-## 🔧 配置
-
-### config.json
-```json
-{
-  "openai_api_key": "sk-...",
-  "anthropic_api_key": "sk-ant-...",
-  "ollama_endpoint": "http://localhost:11434/api/chat",
-  "server_port": 3000
-}
-```
-
-## 🛣️ 路线图
-
-### Phase 1: 基础 Web 服务器 ✅
-- [x] Crow 框架集成
-- [x] REST API 路由
-- [x] CORS 中间件
-- [x] 静态文件服务
-
-### Phase 2: 前端开发 ✅
-- [x] Solid.js 项目搭建
-- [x] API 客户端封装
-- [x] 小说列表组件
-- [x] 状态管理 (Store)
-
-### Phase 3: 完整功能 (进行中)
-- [ ] 章节编辑器
-- [ ] AI 助手面板
-- [ ] SSE 流式输出
-- [ ] 角色管理
-- [ ] 导出功能
-
-### Phase 4: 优化与打磨
-- [ ] 响应式布局
-- [ ] 暗色/亮色主题
-- [ ] 快捷键支持
-- [ ] 离线支持
-- [ ] 性能优化
-
-## 🤝 参考项目
-
-感谢以下项目的启发：
-- **Koodo Reader**: Go HTTP server 设计
-- **Cherry Studio**: Electron 架构和数据层
-- **AI Novel Writer**: React + SQLite 模式
-
-## 📄 许可证
-
-MIT License
-
----
-
-**当前状态**: Phase 2 完成 ✅  
-**可用性**: 开发可用 🚧  
-**架构**: Web 大后端 + 轻量前端 🌐  
-**Windows Only**: ✅

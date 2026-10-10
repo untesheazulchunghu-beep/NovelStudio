@@ -1,220 +1,71 @@
-# Development Roadmap
+# NovelStudio 开发路线图
 
-## Phase 1: Foundation (Current Sprint)
-**Goal**: Core C++ infrastructure with database and AI integration
+本路线图以当前 Go + React 代码为基线。产品先完成可靠的本地单用户写作闭环，再推进发布能力和长篇项目体验。
 
-### Completed ✅
-- [x] Project structure setup
-- [x] CMake build system
-- [x] SQLite database layer
-- [x] Basic entity models (Novel, Chapter, Character)
-- [x] Database CRUD operations
-- [x] AI provider interface
-- [x] OpenAI integration stub
+## 技术路线
 
-### In Progress 🚧
-- [ ] Complete AI provider implementation
-- [ ] Add proper error handling
-- [ ] Implement logging system
-- [ ] Basic unit tests
+- **后端**：Go 1.23+、标准库 `net/http`、SQLite；入口位于 `cmd/novelstudio`，业务与存储代码位于 `internal/app`。
+- **前端**：React 19、TypeScript、Vite；开发服务器默认运行在 `localhost:5173`，通过 Vite 将 `/api` 转发给 Go 服务。
+- **数据**：SQLite 文件保存在 `data/novelstudio.db`；一个数据库可保存多个独立小说项目。旧版 `data/workspace.json` 在首次启动时导入。
+- **AI**：默认使用本地规则引擎，也可按项目配置 OpenAI 兼容接口。
+- **交付**：`build-web.bat` 构建前端并生成 Go 可执行文件；生产服务从 `frontend/dist` 提供静态页面。
 
-### Next Steps 📋
-- [ ] Configuration file support (JSON/TOML)
-- [ ] Encryption for API keys
-- [ ] Connection pooling for database
+## 已具备的能力
 
----
+- Go API 与 SQLite 事务存储，支持多项目、章节、角色、便笺、聊天和模型设置。
+- 旧 JSON 工作区迁移，以及带版本的项目备份导入与导出。
+- React 写作工作台：章节编辑、自动保存和失败重试、顺序调整、字数统计、项目内搜索和键盘操作。
+- 章节检查点、版本预览、稿件对照、安全恢复；每章保留最近 20 个检查点。
+- Markdown 导出，包含尚未自动保存的当前章节内容。
+- 写作、规划、审阅、改写四种 Agent 模式，兼容模型设置、选区改写确认和可恢复的聊天请求。
+- 本地 API 的回环监听、来源校验、请求体大小限制、备份凭据清理和 SQLite 文件权限处理。
 
-## Phase 2: User Interface (2-3 weeks)
-**Goal**: Windows-native UI with core editing features
+## 后续里程碑
 
-### UI Framework Decision
-**Option A: WinUI 3** (Recommended for Windows-only)
-- ✅ Native Windows 11 look and feel
-- ✅ Fluent Design integration
-- ✅ Modern XAML architecture
-- ❌ Windows 10 1809+ only
+### 1. 稳定性与发布流程
 
-**Option B: Qt 6** (Alternative for future cross-platform)
-- ✅ Mature ecosystem
-- ✅ Cross-platform ready
-- ✅ Rich widget library
-- ❌ Larger binary size
+- 已加入 Ubuntu/Windows 构建工作流，检查 Go 格式、`go vet`、Go 编译和 React 前端构建；首次绿色运行仍待确认。
+- 已加入 Windows 便携包脚本和[发布验收清单](RELEASE_CHECKLIST.md)；自动化交互覆盖、Go 测试门禁和升级策略仍待完善。
+- 评估 Windows 安装包，并完善数据库备份提示和版本升级流程。
 
-### UI Components
-- [ ] Main window with menu bar
-- [ ] Project/novel list view
-- [ ] Chapter tree view
-- [ ] Rich text editor (QTextEdit or RichEditBox)
-- [ ] Character management panel
-- [ ] AI assistant sidebar
-- [ ] Settings dialog
+**完成标准**：干净环境可按文档构建；关键 API 和写作流程有自动化或明确的手动验收步骤；升级时不会覆盖用户数据库。
 
----
+### 2. 出版导出
 
-## Phase 3: AI Writing Features (3-4 weeks)
-**Goal**: Intelligent writing assistance
+- DOCX 和 EPUB 导出已接入 Go API 与 React 工作台，会合并当前编辑器中的未保存章节标题和正文；仍需按发布验收清单确认常见办公软件和电子书阅读器的打开效果。
+- EPUB 包含标题页、目录、章节导航和样式表，章节内容按 XHTML 编码。
+- 为中文文件名、长章节、空章节、特殊字符和目录生成定义一致规则。
+- 所有出版格式都应包含编辑器中尚未保存的当前章节正文。
 
-### AI Capabilities
-- [ ] **Context-aware suggestions**
-  - Track current chapter context
-  - Character consistency checking
-  - Plot continuity validation
+**完成标准**：导出文件可由常见办公软件或电子书阅读器打开；章节顺序、中文文本和目录正确；导出失败时保留明确错误信息。
 
-- [ ] **Generation modes**
-  - Continue writing (next paragraph)
-  - Rewrite selection
-  - Expand outline to prose
-  - Summarize chapter
+### 3. 长篇项目性能
 
-- [ ] **Multi-provider support**
-  - OpenAI (GPT-4, GPT-3.5)
-  - Anthropic (Claude 3)
-  - Local models (Ollama)
-  - Azure OpenAI
+- 已将工作区响应和 Go 常驻缓存改为章节目录摘要；编辑器切章时按需获取单章正文、释放上一章的前端正文缓存，并取消已过期的读取请求。备份、DOCX 和 EPUB 生成时再从 SQLite 读取完整快照。
+- 已将全文搜索和 Markdown 导出移到 Go 服务端；搜索保留当前编辑器未保存正文的即时匹配，导出合并当前章节未保存标题与正文。
+- 已加入 SQLite FTS5 三元索引来检索较长的章节关键词；短词、纯数字和带标点的查询继续使用兼容路径。
+- DOCX、EPUB 和完整备份继续从服务端读取项目快照，不依赖前端缓存所有章节正文。
+- 建立不同章节数和正文规模下的加载时间、内存和搜索响应基线。
+- 根据基线继续降低项目刷新和备份以外操作的内存开销，并评估短词搜索的优化空间。
 
-- [ ] **Prompt templates**
-  - Character description generator
-  - Plot outline generator
-  - Dialogue improver
-  - Scene descriptor
+**完成标准**：大项目打开工作区时不必传输全部章节正文；切换章节、搜索和备份仍返回完整且一致的数据。
 
----
+### 4. 编辑体验与前端维护
 
-## Phase 4: Advanced Features (4-6 weeks)
+- 将 `App.tsx` 中的工作区、编辑器、Agent、设置和对话框逐步拆成独立组件与 hooks。
+- 增加可保存的编辑器字体与字号偏好、专注写作布局，并评估浅色主题。
+- 检查窄屏布局、键盘焦点、对话框焦点返回和屏幕阅读器状态提示。
 
-### Version Control
-- [ ] Chapter revision history
-- [ ] Diff viewer for revisions
-- [ ] Branch/merge for plot variations
-- [ ] Backup/restore functionality
+**完成标准**：拆分不改变现有工作流；个人偏好重启后保留；核心编辑和 Agent 操作可只用键盘完成。
 
-### Export & Publishing
-- [ ] Export to DOCX (OpenXML)
-- [ ] Export to PDF (via Qt or WinRT)
-- [ ] Export to EPUB
-- [ ] Export to Markdown
-- [ ] Custom export templates
+### 5. 创作资料与规划视图
 
-### Organization Tools
-- [ ] Timeline view for plot events
-- [ ] Character relationship graph
-- [ ] Location/worldbuilding database
-- [ ] Research notes attachments
+- 添加角色关系图和故事时间线，数据按项目隔离并支持备份恢复。
+- 评估地点、组织、物品等世界观资料，以及资料间引用和章节关联。
+- 让作者能选择哪些资料进入 Agent 上下文，并显示上下文来源。
 
-### Productivity
-- [ ] Word count tracking & goals
-- [ ] Writing statistics dashboard
-- [ ] Pomodoro timer integration
-- [ ] Distraction-free mode
+**完成标准**：新增资料有明确的数据模型、编辑流程、搜索和备份覆盖；不会未经作者选择就扩大 Agent 上下文。
 
----
+## 后续方向
 
-## Phase 5: Polish & Optimization (2-3 weeks)
-
-### Performance
-- [ ] Lazy loading for large novels
-- [ ] Background save operations
-- [ ] AI request caching
-- [ ] Database optimization
-
-### User Experience
-- [ ] Keyboard shortcuts
-- [ ] Drag & drop chapter reordering
-- [ ] Auto-save
-- [ ] Dark/light theme
-- [ ] Customizable fonts & colors
-
-### Quality
-- [ ] Comprehensive error handling
-- [ ] Logging & diagnostics
-- [ ] Crash reporting
-- [ ] Memory leak detection
-
----
-
-## Phase 6: Beta Testing & Release (3-4 weeks)
-
-### Testing
-- [ ] Manual testing suite
-- [ ] Beta user program
-- [ ] Performance benchmarking
-- [ ] Security audit (API key storage)
-
-### Documentation
-- [ ] User manual
-- [ ] Video tutorials
-- [ ] API documentation
-- [ ] Developer guide
-
-### Packaging
-- [ ] Windows installer (WiX or Inno Setup)
-- [ ] Code signing certificate
-- [ ] Auto-update mechanism
-- [ ] Portable version
-
----
-
-## Future Considerations
-
-### Collaboration Features
-- [ ] Cloud sync (optional)
-- [ ] Multi-user editing
-- [ ] Comment & review system
-- [ ] Shared character/world database
-
-### AI Enhancements
-- [ ] Voice-to-text integration
-- [ ] Image generation for characters/scenes
-- [ ] Style mimicry (write like Author X)
-- [ ] Plot hole detection
-
-### Platform Expansion
-- [ ] macOS version (Qt port)
-- [ ] Linux version (Qt port)
-- [ ] Web version (WASM)
-- [ ] Mobile companion app
-
----
-
-## Technical Debt & Refactoring
-
-### Code Quality
-- [ ] Add comprehensive unit tests (target: 80% coverage)
-- [ ] Set up CI/CD pipeline
-- [ ] Static analysis (clang-tidy, cppcheck)
-- [ ] Code formatting enforcement (clang-format)
-
-### Architecture
-- [ ] Implement dependency injection container
-- [ ] Add service layer abstraction
-- [ ] Create plugin architecture
-- [ ] Modularize AI providers as plugins
-
-### Documentation
-- [ ] API reference (Doxygen)
-- [ ] Architecture decision records
-- [ ] Contributing guidelines
-- [ ] Code style guide
-
----
-
-## Success Metrics
-
-### MVP (Phase 1-3)
-- ✅ User can create and edit novels
-- ✅ AI can generate text continuations
-- ✅ Data persists locally
-- ✅ Basic UI is functional
-
-### v1.0 (Phase 1-6)
-- 📊 1000+ daily active users
-- 📊 Average session length > 30 minutes
-- 📊 AI generation success rate > 80%
-- 📊 Crash rate < 0.1%
-
-### Long-term
-- 🎯 10,000+ active users
-- 🎯 Support 10+ languages
-- 🎯 Community plugin ecosystem
-- 🎯 Published novels written with the tool
+账户、跨设备同步和协作编辑安排在本地单用户版本稳定之后；开始前需确定身份验证、冲突处理和本地数据迁移方案。

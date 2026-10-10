@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Check Go formatting
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path cmd, internal -Filter *.go -Recurse -File
+          $unformatted = foreach ($file in $files) {
+            $diff = & gofmt -d $file.FullName
+            if ($diff) { $file.FullName }
+          }
+          if ($unformatted) {
+            Write-Error ("Run gofmt on: " + ($unformatted -join ", "))
+            exit 1
+          }
+
+      - name: Inspect Go packages
+        run: go vet ./...
+
+      - name: Build Go server
+        run: go build ./cmd/novelstudio
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build

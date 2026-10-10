@@ -1,111 +1,38 @@
-# NovelStudio Architecture
+# NovelStudio architecture
 
-## Overview
+## Runtime
 
-NovelStudio is a Windows-native AI-powered novel writing platform built with modern C++. It combines local data storage with cloud AI services to provide a powerful writing environment.
-
-## Architecture Layers
-
-### 1. Core Layer (`src/core/`)
-- **Application**: Main application lifecycle management
-- **Configuration**: App settings and preferences
-- **Event System**: Event bus for loose coupling between components
-
-### 2. Database Layer (`src/database/`)
-- **Database**: SQLite-based persistence
-- **Entities**: Novel, Chapter, Character, Revision
-- **Migrations**: Schema versioning
-
-### 3. AI Layer (`src/ai/`)
-- **AIProvider**: Abstract interface for AI services
-- **OpenAIProvider**: OpenAI API integration
-- **AnthropicProvider**: Claude API integration
-- **LocalProvider**: Local model support (Ollama, LM Studio)
-- **Prompts**: Template system for AI prompts
-
-### 4. UI Layer (`src/ui/`)
-Two potential approaches:
-
-#### Option A: WinUI 3 (Recommended)
-- Modern Windows-native UI
-- Fluent Design System
-- XAML-based declarative UI
-- Better Windows 11 integration
-
-#### Option B: Qt 6
-- Cross-platform (future Linux/Mac support)
-- More mature ecosystem
-- Rich widget library
-
-### 5. Utils Layer (`src/utils/`)
-- **Logger**: Logging system
-- **FileIO**: File operations
-- **StringUtils**: String manipulation
-- **JsonUtils**: JSON parsing/serialization
-
-## Data Flow
-
-```
-User Input → UI Layer → Core Logic → Database/AI → Update UI
+```text
+React/Vite (5173 in development)
+        │ fetch /api/*
+        ▼
+Go net/http server (8080 by default; Vite proxy target is configurable)
+        │
+        ├── Store: in-memory workspace cache + SQLite transactions
+        ├── Agent: local rule engine or OpenAI-compatible adapter
+        └── SQLite: data/novelstudio.db
 ```
 
-## Key Design Patterns
+The local app supports multiple novel projects in one SQLite database. Each project has a workspace ID, and every workspace API request selects it through `X-Workspace-ID`; requests without the header use the seeded `default` workspace. Content tables carry the workspace ID, while the workspace row also has an `owner_id` field for future account ownership. The project list, creation, metadata update, and deletion endpoints are global to the current local user. Project deletion cascades to its content and refuses to remove the last project.
 
-### 1. Repository Pattern
-All database access goes through repository classes that abstract SQL details.
+## Agent context
 
-### 2. Strategy Pattern
-AI providers implement a common interface, allowing runtime provider switching.
+`POST /api/chat` receives the selected writing mode, chapter ID, the current editor title and goal, the current editor tail, an optional selected passage (limited to 1,800 Unicode characters), and the user message. The server adds project references and recent chat turns before calling the configured provider. Edit mode asks for replacement text only. Replies are saved with the conversation, and request results are stored separately from the 60-message history window. A client supplied `request_id` makes retries with the same request fingerprint return the saved user and assistant messages without generating another reply, even after the conversation history is trimmed; results remain until project deletion. Servers in the same process that open the same SQLite file share an in-memory request lock. Separate processes coordinate through a two-minute SQLite lease; waiters reuse completed results, and a crashed owner can be replaced after the lease expires. The transaction fences an expired owner from committing after takeover. A model call that exceeds the lease can still be duplicated, but the unique request result remains single. Reusing an ID for known different content returns HTTP 409 with `chat_request_conflict`; an older matching user message with no stored fingerprint returns `chat_request_unverifiable` so the UI does not assume that the new request was saved. The UI offers an explicit apply action that replaces the original range only while its source text is unchanged.
 
-### 3. Observer Pattern
-UI components subscribe to data changes through an event system.
+`POST /api/chapters/:id/generate` receives the current editor title, goal, body, and a writing instruction. Unsaved editor values take precedence over the last saved chapter snapshot; older clients that omit these fields continue to use saved chapter metadata and body. The server combines them with project references and asks the provider to return only text that can be appended to the chapter.
 
-### 4. Command Pattern
-User actions are encapsulated as commands for undo/redo support.
+`POST /api/workspace/export/docx` and `POST /api/workspace/export/epub` create WordprocessingML and EPUB 3 packages from a workspace snapshot. The request can replace the current chapter's title and body with unsaved editor values; all other chapters come from SQLite and are written in chapter order. EPUB includes a title page, navigation document, stylesheet, and one XHTML file per chapter. XML-invalid characters return a clear client error rather than producing a damaged document.
 
-## Dependencies
+`GET /api/workspace` returns chapter metadata without chapter bodies, and the Go workspace cache keeps only that metadata. The editor loads a body through `GET /api/chapters/:id` when that chapter becomes active, drops the previous chapter body from its client cache after navigation, and cancels obsolete requests during rapid navigation. `GET /api/chapters/search?q=...` searches saved chapter titles, summaries, and bodies on the server and returns matching excerpts; the client also checks the active unsaved draft. SQLite FTS5 with the trigram tokenizer indexes chapter text without storing another copy of the source bodies. Terms of three or more characters use the index; short terms, punctuation, and numeric queries retain the direct scan path. `POST /api/workspace/export/markdown` builds the complete Markdown file on the server and accepts an override for the active chapter's unsaved title and body. Backups and the DOCX/EPUB exporters load full snapshots from SQLite only while creating an export.
 
-### Core Dependencies
-- **SQLite3**: Local database
-- **libcurl**: HTTP client
-- **nlohmann/json**: JSON parsing
-- **spdlog**: Logging (planned)
+Chapter checkpoints live in `chapter_revisions`, separate from the active chapter row so normal autosaves do not create noisy history. Authors can save a named checkpoint, inspect its metadata, and load its body for preview. Restoring a checkpoint and saving the current chapter as a recovery point happen in one SQLite transaction. Each chapter keeps its latest 20 checkpoints; deleting a chapter cascades to its history. Project backups include these checkpoints and imports remap their chapter IDs.
 
-### UI Dependencies (WinUI 3)
-- **Microsoft.WindowsAppSDK**
-- **Microsoft.Windows.CppWinRT**
+The default provider is `local-creative`. It gives deterministic, Chinese-language writing guidance for offline development. `openai` and `compatible` use the standard `/v1/chat/completions` contract when a valid base URL, model name, and key are configured. Incomplete remote settings return a configuration error instead of silently falling back to local replies.
 
-### UI Dependencies (Qt alternative)
-- **Qt6Core**
-- **Qt6Widgets**
-- **Qt6Network**
+## Persistence
 
-## Future Enhancements
+Writes are serialized by the store mutex and committed as a SQLite transaction. After initialization, the store writes only child records that changed; chapter reorders stage temporary unique numbers before applying their final order. Model API keys stay in the local database and are never returned by settings or workspace reads; those responses include only an `api_key_configured` flag for the key. Omitting `api_key` on settings updates preserves the saved value, while sending an empty string clears it. Project backups use a versioned JSON format and restore as a new project with fresh record IDs. API keys are omitted, and credentials in the model endpoint URL's user information, query parameters, and fragment are removed on export and import. The first launch seeds a small working novel. The app attempts to restrict permissions on the prior `data/workspace.json` on every startup. If the database has no workspace, it imports the file while retaining its JSON contents as a backup. SQLite database and sidecar files are also set to owner-only permissions where supported. The default HTTP listener is loopback-only. Browser requests are accepted from the same loopback origin or the local Vite origins (`localhost:5173` and `127.0.0.1:5173`); requests from other origins are rejected. API responses are marked `no-store`, and the server prevents framing and MIME sniffing. Requests without an `Origin` header remain available to local command-line clients.
 
-### Phase 1 (Current)
-- Basic CRUD operations
-- Simple AI integration
-- Console-based testing
-
-### Phase 2
-- Full UI implementation
-- Rich text editor
-- Chapter organization
-
-### Phase 3
-- AI writing assistant features
-- Character/plot tracking
-- Export functionality
-
-### Phase 4
-- Version control integration
-- Collaboration features
-- Plugin system
-
-## Inspired By
-
-Based on analysis of reference projects in `ck/`:
-- **Cherry Studio**: IoC container pattern, service lifecycle
-- **AI Novel Writer**: Version-controlled embeddings, multi-draft system
-- **NovelForge**: Schema-first AI generation, workflow engine
-- **Luobi**: Repository pattern, clean architecture
+Settings and workspace responses return a sanitized model URL and a `base_url_credentials_configured` flag. Settings updates retain hidden URL credentials unless the user explicitly clears them. Project, character, note, chapter, and revision-label write APIs enforce the form's text lengths and note categories; backup restores retain existing field values. Metadata and ordering requests are capped at 256 KiB, chapter edits at 16 MiB, Agent requests at 1 MiB, project backup imports at 256 MiB, and legacy JSON migration at 256 MiB. Oversized JSON request bodies return HTTP 413. The HTTP server applies a Content Security Policy that limits scripts and connections to the app's own origin and disables embedded objects. Model API redirects are followed only on the same host, and HTTPS requests are never downgraded to HTTP. Plain HTTP model endpoints are accepted only for localhost or loopback IP addresses; network endpoints require HTTPS.
+Legacy note categories imported from backups can be kept when editing a note; changing the category requires one of the supported values.
+Word counts treat each Han ideograph as one unit and group contiguous letters, combining marks, numbers, and underscores from other scripts into one word.

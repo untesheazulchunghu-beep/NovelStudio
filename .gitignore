@@ -1,49 +1,27 @@
-# Build directories
-build/
-cmake-build-*/
-out/
-bin/
-lib/
-
-# Visual Studio
-.vs/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-*.vcxproj.filters
-*.vcxproj.user
-
-# CMake
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-CTestTestfile.cmake
-compile_commands.json
-
-# Compiled files
+# Go
+/bin/
+/release/
 *.exe
-*.dll
-*.lib
-*.obj
-*.pdb
-*.ilk
-*.exp
+*.test
 
-# IDE
-.vscode/
-.idea/
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
-# OS
-Thumbs.db
-Desktop.ini
-
-# Application data
+# Local runtime data
+/data/
 *.db
 *.db-journal
-config.local.json
-logs/
+*.db-shm
+*.db-wal
+*.log
 
-# Third party
-third_party/*/
-!third_party/.gitkeep
+# Editors and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

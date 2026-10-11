@@ -24,8 +24,8 @@
 
 ### 1. 稳定性与发布流程
 
-- 已加入 Ubuntu/Windows 构建工作流，检查 Go 格式、`go vet`、Go 编译和 React 前端构建；首次绿色运行仍待确认。
-- 已加入 Windows 便携包脚本和[发布验收清单](RELEASE_CHECKLIST.md)；自动化交互覆盖、Go 测试门禁和升级策略仍待完善。
+- 已加入 Ubuntu/Windows 构建工作流，检查 Go 格式、`go vet`、Go 编译和 React 前端构建；本地 Go 测试、静态检查和前端生产构建已通过，仍需等待 CI 实际运行结果。
+- 已加入 Windows 便携包脚本和[发布验收清单](RELEASE_CHECKLIST.md)；自动化交互覆盖和 Go 测试门禁仍待完善，迁移前会保留数据库快照。
 - 评估 Windows 安装包，并完善数据库备份提示和版本升级流程。
 
 **完成标准**：干净环境可按文档构建；关键 API 和写作流程有自动化或明确的手动验收步骤；升级时不会覆盖用户数据库。
@@ -44,8 +44,9 @@
 - 已将工作区响应和 Go 常驻缓存改为章节目录摘要；编辑器切章时按需获取单章正文、释放上一章的前端正文缓存，并取消已过期的读取请求。备份、DOCX 和 EPUB 生成时再从 SQLite 读取完整快照。
 - 已将全文搜索和 Markdown 导出移到 Go 服务端；搜索保留当前编辑器未保存正文的即时匹配，导出合并当前章节未保存标题与正文。
 - 已加入 SQLite FTS5 三元索引来检索较长的章节关键词；短词、纯数字和带标点的查询继续使用兼容路径。
+- 已修复 FTS 结果片段在正文命中时被非空摘要遮蔽的问题，并补充标题、摘要和正文命中测试。
 - DOCX、EPUB 和完整备份继续从服务端读取项目快照，不依赖前端缓存所有章节正文。
-- 建立不同章节数和正文规模下的加载时间、内存和搜索响应基线。
+- 已建立首轮加载时间和搜索响应基线，见 [性能基线](PERFORMANCE_BASELINE.md)；后续应在相同参数下比较优化结果。
 - 根据基线继续降低项目刷新和备份以外操作的内存开销，并评估短词搜索的优化空间。
 
 **完成标准**：大项目打开工作区时不必传输全部章节正文；切换章节、搜索和备份仍返回完整且一致的数据。
@@ -53,21 +54,25 @@
 ### 4. 编辑体验与前端维护
 
 - 已拆出纯函数工具（`src/lib/`）、UI 类型（`src/workbenchTypes.ts`）和侧栏、Agent、编辑器子组件；命令面板结果改为纯函数 `buildPaletteResults`。
-- `App.tsx` 仍约 2,100 行：工作区、编辑器、Agent 和全局快捷键共享同一组状态，而全局快捷键 effect 的依赖数组在渲染期读取弹窗开关，直接迁移会改变 effect 顺序。
-- 下一步：先把章节版本、角色/便笺、项目管理的弹窗状态迁入各自的 hook，并让快捷键通过 hook 返回的开关读取状态；之后再拆编辑器和 Agent。
-- 增加可保存的编辑器字体与字号偏好、专注写作布局，并评估浅色主题。
+- `App.tsx` 已将章节编辑器和 Agent 面板分别提取为 `components/editorPane.tsx` 与 `components/assistantPane.tsx`，工作区只负责组合视图和协调状态。
+- 已把章节版本、角色/便笺、项目管理的弹窗状态迁入各自的 hook，并将全局快捷键拆到 `useWorkbenchShortcuts`；章节编辑器和 Agent 面板均已提取为独立组件，浅色主题已加入偏好设置。
+- 已增加可保存的编辑器字体、字号、浅色主题和专注写作偏好；主题切换保持编辑器、侧栏、Agent 与对话框的层级和焦点样式。
 - 检查窄屏布局、键盘焦点、对话框焦点返回和屏幕阅读器状态提示。
 
 **完成标准**：拆分不改变现有工作流；个人偏好重启后保留；核心编辑和 Agent 操作可只用键盘完成。
 
 ### 5. 创作资料与规划视图
 
-- 添加角色关系图和故事时间线，数据按项目隔离并支持备份恢复。
+- 已添加按项目隔离的故事时间线，支持关键事件、故事时间、状态和章节关联；事件可编辑、删除、在命令面板搜索，并覆盖项目备份恢复。
 - 评估地点、组织、物品等世界观资料，以及资料间引用和章节关联。
-- 让作者能选择哪些资料进入 Agent 上下文，并显示上下文来源。
+- 已加入按项目保存的 Agent 上下文选择；角色、便笺和时间线事件可逐项勾选，面板显示当前来源，未勾选资料不会进入请求。
 
 **完成标准**：新增资料有明确的数据模型、编辑流程、搜索和备份覆盖；不会未经作者选择就扩大 Agent 上下文。
 
 ## 后续方向
 
 账户、跨设备同步和协作编辑安排在本地单用户版本稳定之后；开始前需确定身份验证、冲突处理和本地数据迁移方案。
+
+### 5.1 World assets and relationship view
+
+Completed: world assets (place, organization, item, concept) now support CRUD, chapter links, directed asset relations, SQLite migration, backup import/export, command palette search, explicit Agent context selection, and a relation view that shows outgoing and incoming links together; linked chapters and assets are actionable from the view.

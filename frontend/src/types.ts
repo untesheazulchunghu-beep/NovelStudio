@@ -75,6 +75,38 @@ export interface Note {
   updated_at: string
 }
 
+export type TimelineEventStatus = 'planned' | 'active' | 'done'
+
+export interface TimelineEvent {
+  id: number
+  title: string
+  time_label: string
+  description: string
+  status: TimelineEventStatus | string
+  chapter_id?: number
+  updated_at: string
+}
+
+export type WorldAssetKind = 'place' | 'organization' | 'item' | 'concept'
+
+export interface WorldAsset {
+  id: number
+  name: string
+  kind: WorldAssetKind | string
+  description: string
+  details: string
+  chapter_ids?: number[]
+  related_asset_ids?: number[]
+  updated_at: string
+}
+
+export interface ChatContextItems {
+  character_ids: number[]
+  note_ids: number[]
+  timeline_event_ids: number[]
+  world_asset_ids: number[]
+}
+
 export interface ChatMessage {
   id?: number
   request_id?: string
@@ -122,6 +154,8 @@ export interface Workspace {
   chapters: Chapter[]
   characters: Character[]
   notes: Note[]
+  timeline: TimelineEvent[]
+  world_assets: WorldAsset[]
   chat: ChatMessage[]
   settings: Settings
   updated_at: string

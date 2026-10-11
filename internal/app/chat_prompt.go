@@ -51,7 +51,7 @@ func buildChatPrompt(workspace Workspace, chapter Chapter, input ChatRequest) st
 	} else {
 		fmt.Fprintf(&builder, "当前章节：第%d章《%s》。章节摘要：%s。\n", chapter.Number, trimPromptText(chapter.Title, 120), trimPromptText(chapter.Summary, 1200))
 	}
-	appendWorkspaceReferences(&builder, workspace)
+	appendWorkspaceReferences(&builder, workspace, input.ContextItems)
 	if input.Context != "" {
 		contextLabel := "当前章节正文片段（编辑器末尾）"
 		if strings.TrimSpace(input.Selection) != "" {
@@ -81,12 +81,12 @@ func writingModeInstruction(mode string) string {
 	}
 }
 
-func buildChapterGeneratePrompt(workspace Workspace, chapter Chapter, instruction, currentText string) string {
+func buildChapterGeneratePrompt(workspace Workspace, chapter Chapter, instruction, currentText string, selected *ChatContextItems) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "你是小说工作室中的写作 Agent。任务类型：正文续写。请为《%s》第%d章《%s》续写中文小说正文。\n", trimPromptText(workspace.Project.Title, 120), chapter.Number, trimPromptText(chapter.Title, 120))
 	fmt.Fprintf(&builder, "项目类型：%s。项目设定：%s\n", trimPromptText(workspace.Project.Genre, 120), trimPromptText(workspace.Project.Premise, 1600))
 	fmt.Fprintf(&builder, "本章目标：%s\n", trimPromptText(chapter.Summary, 1200))
-	appendWorkspaceReferences(&builder, workspace)
+	appendWorkspaceReferences(&builder, workspace, selected)
 	if text := strings.TrimSpace(currentText); text != "" {
 		fmt.Fprintf(&builder, "当前章节正文（编辑器末尾片段）：%s\n", trimPromptText(text, 1800))
 	}
@@ -95,34 +95,120 @@ func buildChapterGeneratePrompt(workspace Workspace, chapter Chapter, instructio
 	return builder.String()
 }
 
-func appendWorkspaceReferences(builder *strings.Builder, workspace Workspace) {
-	if len(workspace.Characters) > 0 {
+func appendWorkspaceReferences(builder *strings.Builder, workspace Workspace, selected *ChatContextItems) {
+	if selected == nil {
+		appendSelectedWorkspaceReferences(builder, workspace.Characters, workspace.Notes, nil, nil)
+		return
+	}
+	characterIDs := contextIDs(selected.CharacterIDs)
+	noteIDs := contextIDs(selected.NoteIDs)
+	timelineIDs := contextIDs(selected.TimelineEventIDs)
+	worldAssetIDs := contextIDs(selected.WorldAssetIDs)
+	characters := make([]Character, 0, len(workspace.Characters))
+	for _, character := range workspace.Characters {
+		if characterIDs[character.ID] {
+			characters = append(characters, character)
+		}
+	}
+	notes := make([]Note, 0, len(workspace.Notes))
+	for _, note := range workspace.Notes {
+		if noteIDs[note.ID] {
+			notes = append(notes, note)
+		}
+	}
+	timeline := make([]TimelineEvent, 0, len(workspace.Timeline))
+	for _, event := range workspace.Timeline {
+		if timelineIDs[event.ID] {
+			timeline = append(timeline, event)
+		}
+	}
+	worldAssets := make([]WorldAsset, 0, len(workspace.WorldAssets))
+	for _, asset := range workspace.WorldAssets {
+		if worldAssetIDs[asset.ID] {
+			worldAssets = append(worldAssets, asset)
+		}
+	}
+	appendSelectedWorkspaceReferences(builder, characters, notes, timeline, worldAssets)
+}
+
+func contextIDs(ids []int64) map[int64]bool {
+	result := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+func appendSelectedWorkspaceReferences(builder *strings.Builder, characters []Character, notes []Note, timeline []TimelineEvent, worldAssets []WorldAsset) {
+	if len(characters) > 0 {
 		builder.WriteString("角色档案：\n")
-		limit := len(workspace.Characters)
+		limit := len(characters)
 		if limit > 16 {
 			limit = 16
 		}
-		for _, character := range workspace.Characters[:limit] {
+		for _, character := range characters[:limit] {
 			fmt.Fprintf(builder, "- %s（%s）：%s。特征：%s。\n",
 				trimPromptText(character.Name, 80), trimPromptText(character.Role, 120),
 				trimPromptText(character.Description, 500), promptTraits(character.Traits))
 		}
-		if limit < len(workspace.Characters) {
-			fmt.Fprintf(builder, "（另有 %d 份角色档案未列出。）\n", len(workspace.Characters)-limit)
+		if limit < len(characters) {
+			fmt.Fprintf(builder, "（另有 %d 份角色档案未列出。）\n", len(characters)-limit)
 		}
 	}
-	if len(workspace.Notes) > 0 {
+	if len(notes) > 0 {
 		builder.WriteString("项目便笺：\n")
-		limit := len(workspace.Notes)
+		limit := len(notes)
 		if limit > 20 {
 			limit = 20
 		}
-		for _, note := range workspace.Notes[:limit] {
+		for _, note := range notes[:limit] {
 			fmt.Fprintf(builder, "- %s（%s）：%s\n",
 				trimPromptText(note.Title, 120), trimPromptText(note.Kind, 80), trimPromptText(note.Body, 600))
 		}
-		if limit < len(workspace.Notes) {
-			fmt.Fprintf(builder, "（另有 %d 条便笺未列出。）\n", len(workspace.Notes)-limit)
+		if limit < len(notes) {
+			fmt.Fprintf(builder, "（另有 %d 条便笺未列出。）\n", len(notes)-limit)
+		}
+	}
+	if len(timeline) > 0 {
+		builder.WriteString("故事时间线：\n")
+		limit := len(timeline)
+		if limit > 24 {
+			limit = 24
+		}
+		for _, event := range timeline[:limit] {
+			fmt.Fprintf(builder, "- %s（%s）：%s\n", trimPromptText(event.Title, 120), trimPromptText(event.TimeLabel, 80), trimPromptText(event.Description, 600))
+		}
+		if limit < len(timeline) {
+			fmt.Fprintf(builder, "（另有 %d 条时间线事件未列出。）\n", len(timeline)-limit)
+		}
+	}
+	if len(worldAssets) > 0 {
+		builder.WriteString("World assets:\n")
+		assetNames := make(map[int64]string, len(worldAssets))
+		for _, asset := range worldAssets {
+			assetNames[asset.ID] = trimPromptText(asset.Name, 120)
+		}
+		limit := len(worldAssets)
+		if limit > 24 {
+			limit = 24
+		}
+		for _, asset := range worldAssets[:limit] {
+			fmt.Fprintf(builder, "- %s (%s): %s. Details: %s", trimPromptText(asset.Name, 120), trimPromptText(asset.Kind, 40), trimPromptText(asset.Description, 600), trimPromptText(asset.Details, 800))
+			related := make([]string, 0, len(asset.RelatedAssetIDs))
+			for _, relatedID := range asset.RelatedAssetIDs {
+				if name := assetNames[relatedID]; name != "" {
+					related = append(related, name)
+				}
+			}
+			if len(related) > 0 {
+				fmt.Fprintf(builder, " Related: %s", strings.Join(related, ", "))
+			}
+			builder.WriteString("\n")
+		}
+		if limit < len(worldAssets) {
+			fmt.Fprintf(builder, "(%d more world assets omitted.)\n", len(worldAssets)-limit)
 		}
 	}
 }

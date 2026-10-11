@@ -216,3 +216,80 @@ func TestBuildChatPromptLabelsSelectedPassageContext(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildChatPromptHonorsExplicitContextItems(t *testing.T) {
+	workspace := seedWorkspace()
+	workspace.Characters[0].Name = "selected character"
+	workspace.Characters[1].Name = "hidden character"
+	workspace.Notes[0].Title = "hidden note"
+	workspace.Timeline = []TimelineEvent{
+		{ID: 100, Title: "selected timeline", TimeLabel: "day one", Description: "selected event"},
+		{ID: 101, Title: "hidden timeline", TimeLabel: "day two", Description: "hidden event"},
+	}
+	workspace.WorldAssets = []WorldAsset{
+		{ID: 200, Name: "selected place", Kind: "place", Description: "selected asset", RelatedAssetIDs: []int64{201}},
+		{ID: 201, Name: "hidden organization", Kind: "organization", Description: "hidden asset"},
+	}
+	input := ChatRequest{
+		Mode:    "write",
+		Message: "continue",
+		ContextItems: &ChatContextItems{
+			CharacterIDs:     []int64{workspace.Characters[0].ID},
+			NoteIDs:          []int64{},
+			TimelineEventIDs: []int64{100},
+			WorldAssetIDs:    []int64{200},
+		},
+	}
+	prompt := buildChatPrompt(workspace, workspace.Chapters[0], input)
+	if !strings.Contains(prompt, "selected character") || strings.Contains(prompt, "hidden character") {
+		t.Fatalf("prompt did not honor selected character context: %s", prompt)
+	}
+	if strings.Contains(prompt, "hidden note") {
+		t.Fatalf("prompt unexpectedly included an unselected note: %s", prompt)
+	}
+	if !strings.Contains(prompt, "selected timeline") || strings.Contains(prompt, "hidden timeline") {
+		t.Fatalf("prompt did not honor selected timeline context: %s", prompt)
+	}
+	if !strings.Contains(prompt, "selected place") || strings.Contains(prompt, "hidden organization") {
+		t.Fatalf("prompt did not honor selected world asset context: %s", prompt)
+	}
+}
+
+func TestChatFingerprintCanonicalizesContextSelection(t *testing.T) {
+	left, err := fingerprintChatRequest(ChatRequest{
+		Message: "same", ContextItems: &ChatContextItems{
+			CharacterIDs: []int64{5, 2, 5}, NoteIDs: []int64{9, 3}, TimelineEventIDs: []int64{7}, WorldAssetIDs: []int64{11, 10, 11},
+		},
+	})
+	if err != nil {
+		t.Fatalf("fingerprint left: %v", err)
+	}
+	right, err := fingerprintChatRequest(ChatRequest{
+		Message: "same", ContextItems: &ChatContextItems{
+			CharacterIDs: []int64{2, 5}, NoteIDs: []int64{3, 9, 9}, TimelineEventIDs: []int64{7}, WorldAssetIDs: []int64{10, 11},
+		},
+	})
+	if err != nil {
+		t.Fatalf("fingerprint right: %v", err)
+	}
+	if left != right {
+		t.Fatalf("equivalent context selections produced different fingerprints: %s != %s", left, right)
+	}
+}
+
+func TestBuildChapterGeneratePromptHonorsContextItems(t *testing.T) {
+	workspace := seedWorkspace()
+	workspace.Characters[0].Name = "selected character"
+	workspace.Characters[1].Name = "hidden character"
+	workspace.Notes[0].Title = "hidden note"
+	workspace.Timeline = []TimelineEvent{{ID: 100, Title: "selected timeline", Description: "selected event"}}
+	workspace.WorldAssets = []WorldAsset{{ID: 200, Name: "selected place", Kind: "place", Description: "selected asset"}, {ID: 201, Name: "hidden organization", Kind: "organization"}}
+	prompt := buildChapterGeneratePrompt(workspace, workspace.Chapters[0], "continue", "", &ChatContextItems{
+		CharacterIDs:     []int64{workspace.Characters[0].ID},
+		TimelineEventIDs: []int64{100},
+		WorldAssetIDs:    []int64{200},
+	})
+	if !strings.Contains(prompt, "selected character") || strings.Contains(prompt, "hidden character") || strings.Contains(prompt, "hidden note") || !strings.Contains(prompt, "selected timeline") || !strings.Contains(prompt, "selected place") || strings.Contains(prompt, "hidden organization") {
+		t.Fatalf("chapter generation prompt did not honor context selection: %s", prompt)
+	}
+}

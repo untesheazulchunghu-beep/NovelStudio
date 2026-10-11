@@ -53,6 +53,10 @@ jobs:
       - name: Test Go packages
         run: go test ./...
 
+      - name: Run performance probe smoke test
+        if: matrix.os == 'ubuntu-latest'
+        run: go run ./cmd/perfprobe -chapters 100 -bytes-per-chapter 32768 -iterations 2 > perfprobe.json
+
       - name: Build Go server
         run: go build ./cmd/novelstudio
 
@@ -63,3 +67,38 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Build Windows portable package
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\package-portable.ps1
+
+      - name: Verify Windows portable package
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archivePath = Join-Path $env:GITHUB_WORKSPACE 'release\NovelStudio-portable.zip'
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+          } finally {
+            $archive.Dispose()
+          }
+          $required = @('novelstudio.exe', 'frontend/dist/index.html', 'README.md', 'LICENSE')
+          foreach ($entry in $required) {
+            if ($entries -notcontains $entry) {
+              throw "Portable package is missing $entry"
+            }
+          }
+          if ($entries | Where-Object { $_ -match '(^|/)data(/|$)|(^|/)node_modules(/|$)|\.db($|[-.])|\.log$' }) {
+            throw 'Portable package contains runtime data or development dependencies'
+          }
+
+      - name: Upload Windows portable package
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelStudio-portable-windows
+          path: release/NovelStudio-portable.zip
+          if-no-files-found: error

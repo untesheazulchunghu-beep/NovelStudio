@@ -174,8 +174,9 @@ func chapterSearchFTSQuery(terms []string) (string, bool) {
 func (s *Store) searchChapterFTSLocked(workspaceID, ftsQuery string) ([]ChapterSearchResult, error) {
 	rows, err := s.db.Query(`SELECT chapter.id, chapter.number, chapter.title, chapter.summary,
 		chapter.status, chapter.word_count, chapter.last_edited_at,
-		COALESCE(NULLIF(snippet(chapters_fts, 1, '', '', '…', 80), ''),
-			NULLIF(snippet(chapters_fts, 2, '', '', '…', 80), ''), '')
+		snippet(chapters_fts, 0, '[[', ']]', '…', 80),
+		snippet(chapters_fts, 1, '[[', ']]', '…', 80),
+		snippet(chapters_fts, 2, '[[', ']]', '…', 80)
 		FROM chapters_fts
 	JOIN chapters AS chapter ON chapter.id = chapters_fts.rowid
 	WHERE chapters_fts MATCH ? AND chapter.workspace_id = ?
@@ -188,20 +189,34 @@ func (s *Store) searchChapterFTSLocked(workspaceID, ftsQuery string) ([]ChapterS
 	results := make([]ChapterSearchResult, 0, 15)
 	for rows.Next() {
 		var chapter Chapter
-		var excerpt string
+		var titleSnippet, summarySnippet, contentSnippet string
 		if err := rows.Scan(&chapter.ID, &chapter.Number, &chapter.Title, &chapter.Summary,
-			&chapter.Status, &chapter.WordCount, &chapter.LastEditedAt, &excerpt); err != nil {
+			&chapter.Status, &chapter.WordCount, &chapter.LastEditedAt,
+			&titleSnippet, &summarySnippet, &contentSnippet); err != nil {
 			return nil, err
 		}
 		results = append(results, ChapterSearchResult{
 			ChapterSummary: chapterSummary(chapter),
-			Excerpt:        compactChapterSearchExcerpt(excerpt, 78),
+			Excerpt:        compactChapterSearchExcerpt(firstFTSSnippet(titleSnippet, summarySnippet, contentSnippet), 78),
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return results, nil
+}
+
+// FTS5 returns the beginning of a column when that column does not contain a
+// match. Pick the first snippet that includes our markers so a content hit is
+// not hidden by an unrelated non-empty title or summary.
+func firstFTSSnippet(snippets ...string) string {
+	for _, snippet := range snippets {
+		if !strings.Contains(snippet, "[[") {
+			continue
+		}
+		return strings.ReplaceAll(strings.ReplaceAll(snippet, "[[", ""), "]]", "")
+	}
+	return ""
 }
 
 func compactChapterSearchExcerpt(value string, maxLength int) string {

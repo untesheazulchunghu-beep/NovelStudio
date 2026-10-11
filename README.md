@@ -46,14 +46,16 @@ bin/novelstudio.exe
 - **章节工作区**：章节树、标题和本章目标、正文编辑、字数统计、自动保存、`⌘/Ctrl + S` 保存；编辑器支持 `Tab / Shift + Tab` 缩进或反向缩进选中行；临时保存失败后会自动退避重试，编辑内容变化时重新计时；可删除章节并用上下移动按钮调整顺序。
 - **章节版本**：作者可为当前章节保存检查点、预览正文、与打开版本窗口时的当前稿并排对照，并恢复历史版本；每章最多保留最近 20 个版本。恢复前系统会自动保存当前稿，版本也包含在项目备份中。
 - **出版导出**：将当前项目按章节顺序导出为 Markdown（`.md`）、Word 文档（`.docx`）或 EPUB 电子书（`.epub`）；这些格式都包含当前编辑器中尚未自动保存的章节标题和正文。
-- **项目备份与恢复**：可导出包含项目资料、章节及版本、角色、便笺、最近 60 条对话和模型设置的 JSON 备份，并将备份作为新项目导入；为避免把凭据写入备份，API Key、接口地址中的用户名/密码和凭据类查询参数都会移除，恢复后请检查模型设置。
-- **快速搜索与帮助**：点击顶部搜索框或按 `Ctrl/⌘ + K` 搜索当前项目的章节正文、角色和便笺（包括当前章节未保存的编辑），也可通过命令快速新建内容、切换设置、导出 Markdown/Word/EPUB/备份或导入备份；帮助面板列出常用键盘操作。
+- **项目备份与恢复**：可导出包含项目资料、章节及版本、角色、便笺、时间线事件、最近 60 条对话和模型设置的 JSON 备份，并将备份作为新项目导入；为避免把凭据写入备份，API Key、接口地址中的用户名/密码和凭据类查询参数都会移除，恢复后请检查模型设置。
+- **快速搜索与帮助**：点击顶部搜索框或按 `Ctrl/⌘ + K` 搜索当前项目的章节正文、角色、便笺、时间线和世界观资料（包括当前章节未保存的编辑），也可通过命令快速新建内容、切换设置、导出 Markdown/Word/EPUB/备份或导入备份；帮助面板列出常用键盘操作。
 - **多项目管理**：从顶部选择器切换小说项目，或新建项目；可修改项目名称、副标题、题材、故事设定和目标字数；每个项目有独立的章节、上下文、聊天记录和模型设置，切换项目时未发送的 Agent 输入会在当前页面会话中保留。
-- **Agent 四种模式**：写作、规划、审阅、改写；对话会带入当前项目设定、章节摘要、角色、最近编辑内容、编辑器选区及其附近正文，聊天记录会标出 Agent 回复所用的模式。改写模式需要先选中不超过 1800 字的正文，Agent 给出替换稿后可在预览中调整，再由作者确认应用；应用前会再次确认选区原文和附近正文未变化。本地规则引擎会提示配置兼容模型。单条输入最多 8000 个字符，进行中的模型请求可以取消。
-- **正文生成**：点击「AI 续写」把生成内容追加到当前章节，也可以在聊天中请求续写、摘要或润色。
-- **项目上下文**：查看项目设定，并创建、编辑和删除角色档案与分类便笺；这些资料会进入 Agent 对话上下文，减少长篇写作中的设定漂移。
+- **Agent 四种模式**：写作、规划、审阅、改写；对话会带入当前项目设定、章节摘要、最近编辑内容、编辑器选区及其附近正文，角色、便笺和时间线资料由作者在上下文面板中逐项选择，聊天记录会标出 Agent 回复所用的模式。改写模式需要先选中不超过 1800 字的正文，Agent 给出替换稿后可在预览中调整，再由作者确认应用；应用前会再次确认选区原文和附近正文未变化。本地规则引擎会提示配置兼容模型。单条输入最多 8000 个字符，进行中的模型请求可以取消。
+- **正文生成**：点击「AI 续写」把生成内容追加到当前章节，也可以在聊天中请求续写、摘要或润色；续写和聊天共用上下文面板的资料选择。
+- **项目上下文**：查看项目设定，并创建、编辑和删除角色档案与分类便笺；上下文面板可以按项目保存资料选择，并显示本次 Agent 对话会使用的来源。
+- **故事时间线**：按项目记录关键事件、故事时间、状态和关联章节；时间线事件可在命令面板中搜索，并随项目备份恢复，默认不会自动加入 Agent 上下文。
 - **模型设置**：默认使用本地规则引擎；设置为 `openai` 或 `compatible` 后，可填写 OpenAI 兼容接口和模型。`openai` 服务商需要 API Key；`compatible` 服务商可按接口要求填写，本机免鉴权接口可以留空。密钥保存在本地数据库，读取设置时只返回是否已配置；留空会保留现有密钥，也可以显式清除。
-- **本地持久化**：Go 后端以 SQLite 事务保存项目、章节、角色、便笺、对话和设置，重启后保留工作区。
+- **编辑器偏好**：可在设置中保存正文大小、字体样式、界面主题和专注写作模式；浅色主题适合明亮环境，专注模式暂时隐藏资源侧栏和 Agent 面板，退出按钮始终保留在编辑器工具栏。
+- **本地持久化**：Go 后端以 SQLite 事务保存项目、章节、角色、便笺、时间线、对话和设置，重启后保留工作区。
 
 ## API 概览
 
@@ -83,8 +85,12 @@ bin/novelstudio.exe
 | GET/PUT | `/api/settings` | 模型服务设置 |
 | GET/POST | `/api/characters`、`/api/notes` | 读取或新增上下文资料 |
 | GET/PUT/DELETE | `/api/characters/:id`、`/api/notes/:id` | 读取、修改或删除上下文资料 |
+| GET/POST | `/api/timeline` | 读取或新增故事时间线事件 |
+| GET/PUT/DELETE | `/api/timeline/:id` | 读取、修改或删除时间线事件 |
+| GET/POST | `/api/world-assets` | 读取或新增世界观资料 |
+| GET/PUT/DELETE | `/api/world-assets/:id` | 读取、修改或删除世界观资料 |
 
-工作区 API 使用 `X-Workspace-ID` 请求头选择项目；缺少该请求头时使用 `default` 工作区。`GET /api/projects` 返回每个项目的 `workspace_id`，调用方应将其作为不透明标识使用。创建和更新项目的请求体可包含 `title`、`subtitle`、`genre`、`premise` 和 `word_target`。对话和续写请求可以传入尚未保存的 `chapter_title`、`chapter_summary` 和 `context`，让 Agent 使用当前编辑器中的内容。DOCX 和 EPUB 导出从 SQLite 读取项目和章节，并通过请求体覆盖当前章节标题与正文，避免等待自动保存后再导出。EPUB 包含标题页、目录、章节 XHTML 和样式表。章节版本按章节隔离；恢复操作在同一 SQLite 事务中保存恢复前的章节并更新正文。对话请求可带 `request_id`；同一提交重试时应复用该 ID，服务端按请求指纹返回已保存的用户消息和 Agent 回复。请求结果单独保存在 SQLite，因此聊天窗口裁剪到最近 60 条后，重试仍会返回原回复；结果保留到项目删除。同一进程会按数据库共享请求锁；不同进程通过 SQLite 租约协调相同请求，等待者会复用已保存回复。租约为两分钟，进程异常退出后可在到期后接管；租约失效的旧持有者不能提交结果。若模型调用异常长于租约，仍可能出现重复调用，但 SQLite 只接受一份回复。已校验为不同内容的 ID 会返回 HTTP 409（`chat_request_conflict`）；命中相同用户消息但旧记录没有指纹时会返回 `chat_request_unverifiable`，前端保留输入并要求先检查聊天记录；用户显式确认后才会使用新 ID 重发。若网络中断导致结果无法确认，前端会保留原请求并先同步聊天记录；确认记录中没有该请求后才开放同 ID 重试。删除项目会级联删除其章节版本、章节、角色、便笺、聊天记录、请求结果和模型设置，并至少保留一个项目。
+工作区 API 使用 `X-Workspace-ID` 请求头选择项目；缺少该请求头时使用 `default` 工作区。`GET /api/projects` 返回每个项目的 `workspace_id`，调用方应将其作为不透明标识使用。创建和更新项目的请求体可包含 `title`、`subtitle`、`genre`、`premise` 和 `word_target`。对话和续写请求可以传入尚未保存的 `chapter_title`、`chapter_summary` 和 `context`，让 Agent 使用当前编辑器中的内容；`/api/chat` 还可传入 `context_items`（角色、便笺、时间线事件和世界观资料 ID），由调用方明确控制可选资料，省略该字段时兼容旧客户端行为。DOCX 和 EPUB 导出从 SQLite 读取项目和章节，并通过请求体覆盖当前章节标题与正文，避免等待自动保存后再导出。EPUB 包含标题页、目录、章节 XHTML 和样式表。章节版本按章节隔离；恢复操作在同一 SQLite 事务中保存恢复前的章节并更新正文。对话请求可带 `request_id`；同一提交重试时应复用该 ID，服务端按请求指纹返回已保存的用户消息和 Agent 回复。请求结果单独保存在 SQLite，因此聊天窗口裁剪到最近 60 条后，重试仍会返回原回复；结果保留到项目删除。同一进程会按数据库共享请求锁；不同进程通过 SQLite 租约协调相同请求，等待者会复用已保存回复。租约为两分钟，进程异常退出后可在到期后接管；租约失效的旧持有者不能提交结果。若模型调用异常长于租约，仍可能出现重复调用，但 SQLite 只接受一份回复。已校验为不同内容的 ID 会返回 HTTP 409（`chat_request_conflict`）；命中相同用户消息但旧记录没有指纹时会返回 `chat_request_unverifiable`，前端保留输入并要求先检查聊天记录；用户显式确认后才会使用新 ID 重发。若网络中断导致结果无法确认，前端会保留原请求并先同步聊天记录；确认记录中没有该请求后才开放同 ID 重试。删除项目会级联删除其章节版本、章节、角色、便笺、聊天记录、请求结果和模型设置，并至少保留一个项目。
 
 ## 参考项目
 
@@ -98,3 +104,11 @@ internal/app/          工作区模型、SQLite store、API 路由和 Agent
 frontend/src/          React 工作台、API 客户端和主题样式
 data/                  运行时 SQLite 数据库（首次启动自动创建，不提交）
 ```
+
+### World assets
+
+The workspace now includes reusable world assets for places, organizations, items, and concepts. Each asset can be linked to chapters and related assets, inspected in a card or relation view, searched from the command palette, included explicitly in Agent context, and preserved in project backups. The API is available at /api/world-assets and /api/world-assets/:id.
+
+### Database upgrades
+
+When an existing SQLite database has an older schema, startup creates a protected `novelstudio.db.pre-migration-v*.bak` snapshot before applying migrations. New databases and in-memory databases do not create this file.

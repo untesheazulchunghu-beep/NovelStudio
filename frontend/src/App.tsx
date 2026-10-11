@@ -1,62 +1,136 @@
 import { api } from './api'
-import { ChatPanel, ContextPanel, OutlinePanel } from './components/assistant'
+import { AssistantPane } from './components/assistantPane'
 import { ChapterRevisionsDialog } from './components/chapterRevisionsDialog'
+import { EditorPane } from './components/editorPane'
+import { TimelineDialog } from './components/timelineDialog'
+import { WorldAssetDialog } from './components/worldAssetDialog'
 import { createAgentActions } from './lib/agentActions'
 import { createContextItemActions } from './lib/contextItemActions'
 import { createEditorActions } from './lib/editorActions'
 import { createProjectActions } from './lib/projectActions'
+import { createTimelineActions } from './lib/timelineActions'
+import { createWorldAssetActions } from './lib/worldAssetActions'
 import { useWorkbenchEffects } from './hooks/useWorkbenchEffects'
+import { useWorkbenchShortcuts } from './hooks/useWorkbenchShortcuts'
+import { useProjectDialogState } from './hooks/useProjectDialogState'
+import { useContextDialogState } from './hooks/useContextDialogState'
+import { useRevisionDialogState } from './hooks/useRevisionDialogState'
+import { useTimelineDialogState } from './hooks/useTimelineDialogState'
+import { useWorldAssetDialogState } from './hooks/useWorldAssetDialogState'
+import { useAgentContextSelection } from './hooks/useAgentContextSelection'
+import { readEditorPreferences, saveEditorPreferences, type EditorPreferences } from './lib/editorPreferences'
 import { useChapterActions } from './lib/chapterActions'
 import { CommandPalette } from './components/commandPalette'
-import { CircleStatus, EmptyEditor, GitBranchIcon } from './components/editor'
-import { ActivityButton, CharactersView, ExplorerView, NotesView, SettingsView } from './components/sidebar'
+import { CircleStatus, GitBranchIcon } from './components/editor'
+import { ActivityButton, CharactersView, ExplorerView, NotesView, SettingsView, TimelineView, WorldAssetsView } from './components/sidebar'
 import { suggestionsForMode } from './lib/agent'
 import { characterColors, maxAgentSelectionCharacters } from './lib/constants'
-import { formatNumber, relativeTime, safeProjectFileBaseName, statsForChapters, statusClass } from './lib/format'
+import { formatNumber, safeProjectFileBaseName, statsForChapters } from './lib/format'
 import { buildPaletteResults } from './lib/palette'
 import { countTextWords, countUnicodeCharactersInRange, isIMEComposing, normalizeEditorLineEndings, normalizeUnicodeSelection, sliceUnicodeRange } from './lib/text'
 import { readActiveWorkspacePreference, rememberActiveWorkspacePreference } from './lib/workspacePreference'
-import { BookOpen, Bot, BrainCircuit, Check, ChevronDown, ChevronRight, CircleHelp, FileText, FolderOpen, History, LayoutPanelLeft, Lightbulb, ListTodo, MessageSquare, MoreHorizontal, PanelRightClose, PanelRightOpen, PenLine, Plus, RefreshCw, Save, Search, Settings2, Target, Users, WandSparkles, X, Zap } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Chapter, ChapterRevision, ChapterRevisionSummary, ChapterSearchResult, Character, Note, ProjectSummary, SettingsDraft, SettingsUpdate, WorkspaceResponse } from './types'
+import { BookOpen, CalendarClock, Check, ChevronDown, CircleHelp, FileText, FolderOpen, Globe2, LayoutPanelLeft, Lightbulb, MoreHorizontal, PanelRightOpen, PenLine, Plus, RefreshCw, Search, Settings2, Users, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import type { Chapter, ChapterRevision, ChapterRevisionSummary, ChapterSearchResult, Character, Note, ProjectSummary, SettingsDraft, SettingsUpdate, WorldAsset, WorkspaceResponse } from './types'
 import type { ActivityId, AssistantTab, ChatApplyTarget, ChatRequestRetry, EditorSelection, PaletteResult, WritingMode } from './workbenchTypes'
 
 export default function App() {
+  const [editorPreferences, setEditorPreferences] = useState<EditorPreferences>(() => readEditorPreferences())
   const [data, setData] = useState<WorkspaceResponse | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => readActiveWorkspacePreference() ?? 'default')
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false)
-  const [projectDialogOpen, setProjectDialogOpen] = useState(false)
-  const [projectTitle, setProjectTitle] = useState('')
-  const [projectGenre, setProjectGenre] = useState('')
-  const [projectPremise, setProjectPremise] = useState('')
-  const [creatingProject, setCreatingProject] = useState(false)
-  const [projectEditDialogOpen, setProjectEditDialogOpen] = useState(false)
-  const [projectDraft, setProjectDraft] = useState({ title: '', subtitle: '', genre: '', premise: '', word_target: 120000 })
-  const [savingProject, setSavingProject] = useState(false)
-  const [projectEditError, setProjectEditError] = useState('')
-  const [projectDeleteDialogOpen, setProjectDeleteDialogOpen] = useState(false)
-  const [projectDeleteInput, setProjectDeleteInput] = useState('')
-  const [projectDeleteError, setProjectDeleteError] = useState('')
-  const [deletingProject, setDeletingProject] = useState(false)
-  const [characterDialogOpen, setCharacterDialogOpen] = useState(false)
-  const [characterEditingId, setCharacterEditingId] = useState<number | null>(null)
-  const [characterDraft, setCharacterDraft] = useState({ name: '', role: '', description: '', traits: '', color: '' })
-  const [noteDialogOpen, setNoteDialogOpen] = useState(false)
-  const [noteEditingId, setNoteEditingId] = useState<number | null>(null)
-  const [noteDraft, setNoteDraft] = useState({ title: '', body: '', kind: 'idea' })
-  const [savingContextItem, setSavingContextItem] = useState(false)
-  const [contextDialogError, setContextDialogError] = useState('')
+  const {
+    projectDialogOpen,
+    setProjectDialogOpen,
+    projectTitle,
+    setProjectTitle,
+    projectGenre,
+    setProjectGenre,
+    projectPremise,
+    setProjectPremise,
+    creatingProject,
+    setCreatingProject,
+    projectEditDialogOpen,
+    setProjectEditDialogOpen,
+    projectDraft,
+    setProjectDraft,
+    savingProject,
+    setSavingProject,
+    projectEditError,
+    setProjectEditError,
+    projectDeleteDialogOpen,
+    setProjectDeleteDialogOpen,
+    projectDeleteInput,
+    setProjectDeleteInput,
+    projectDeleteError,
+    setProjectDeleteError,
+    deletingProject,
+    setDeletingProject,
+  } = useProjectDialogState()
+  const {
+    characterDialogOpen,
+    setCharacterDialogOpen,
+    characterEditingId,
+    setCharacterEditingId,
+    characterDraft,
+    setCharacterDraft,
+    noteDialogOpen,
+    setNoteDialogOpen,
+    noteEditingId,
+    setNoteEditingId,
+    noteDraft,
+    setNoteDraft,
+    savingContextItem,
+    setSavingContextItem,
+    contextDialogError,
+    setContextDialogError,
+  } = useContextDialogState()
+  const {
+    timelineDialogOpen,
+    setTimelineDialogOpen,
+    timelineEditingId,
+    setTimelineEditingId,
+    timelineDraft,
+    setTimelineDraft,
+    savingTimeline,
+    setSavingTimeline,
+    timelineDialogError,
+    setTimelineDialogError,
+  } = useTimelineDialogState()
+  const {
+    worldAssetDialogOpen,
+    setWorldAssetDialogOpen,
+    worldAssetEditingId,
+    setWorldAssetEditingId,
+    worldAssetDraft,
+    setWorldAssetDraft,
+    savingWorldAsset,
+    setSavingWorldAsset,
+    worldAssetDialogError,
+    setWorldAssetDialogError,
+  } = useWorldAssetDialogState()
   const [chapterActionBusy, setChapterActionBusy] = useState(false)
-  const [revisionDialogOpen, setRevisionDialogOpen] = useState(false)
-  const [chapterRevisions, setChapterRevisions] = useState<ChapterRevisionSummary[]>([])
-  const [selectedRevision, setSelectedRevision] = useState<ChapterRevision | null>(null)
-  const [revisionCompareOpen, setRevisionCompareOpen] = useState(false)
-  const [revisionCurrentSnapshot, setRevisionCurrentSnapshot] = useState<Pick<Chapter, 'title' | 'summary' | 'content' | 'status' | 'word_count'> | null>(null)
-  const [revisionListLoading, setRevisionListLoading] = useState(false)
-  const [revisionPreviewLoading, setRevisionPreviewLoading] = useState(false)
-  const [revisionLabel, setRevisionLabel] = useState('手动版本')
-  const [revisionError, setRevisionError] = useState('')
+  const {
+    revisionDialogOpen,
+    setRevisionDialogOpen,
+    chapterRevisions,
+    setChapterRevisions,
+    selectedRevision,
+    setSelectedRevision,
+    revisionCompareOpen,
+    setRevisionCompareOpen,
+    revisionCurrentSnapshot,
+    setRevisionCurrentSnapshot,
+    revisionListLoading,
+    setRevisionListLoading,
+    revisionPreviewLoading,
+    setRevisionPreviewLoading,
+    revisionLabel,
+    setRevisionLabel,
+    revisionError,
+    setRevisionError,
+  } = useRevisionDialogState()
   const [error, setError] = useState('')
   const [activeChapterId, setActiveChapterId] = useState<number | null>(null)
   const [activeActivity, setActiveActivity] = useState<ActivityId>('explorer')
@@ -153,6 +227,9 @@ export default function App() {
   const [chapterLoadError, setChapterLoadError] = useState('')
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0)
   const [helpDialogOpen, setHelpDialogOpen] = useState(false)
+  useEffect(() => {
+    saveEditorPreferences(editorPreferences)
+  }, [editorPreferences])
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const backupInputRef = useRef<HTMLInputElement>(null)
   const saveChapterRef = useRef<() => Promise<boolean>>(async () => true)
@@ -237,6 +314,16 @@ export default function App() {
     setShowMobileSidebar(true)
   }
 
+  const openTimelineView = () => {
+    setActiveActivity('timeline')
+    setShowMobileSidebar(true)
+  }
+
+  const openWorldAssetsView = () => {
+    setActiveActivity('world')
+    setShowMobileSidebar(true)
+  }
+
   const openProjectContextView = () => {
     if (projectActionBusy) return
     updateAssistantCollapsed(false)
@@ -256,7 +343,9 @@ export default function App() {
         ? remembered
         : response.projects[0]?.workspace_id
       if (!workspaceId) {
-        setError('还没有小说项目，请先创建一个项目。')
+        setError('No projects yet. Create a project first.')
+        return
+
         return
       }
       activeWorkspaceRef.current = workspaceId
@@ -276,7 +365,7 @@ export default function App() {
       setSuggestions(suggestionsForMode(writingModeRef.current))
     } catch (reason) {
       if (workspaceRequestRef.current === requestID) {
-        setError(reason instanceof Error ? reason.message : '无法连接到 NovelStudio 后端')
+        setError(reason instanceof Error ? reason.message : '无法连接 NovelStudio 后端')
       }
     }
   }, [])
@@ -292,6 +381,9 @@ export default function App() {
   const activeEditorSelectionHasText = Boolean(activeEditorSelection && activeEditorSelection.start >= 0 && activeEditorSelection.start < activeEditorSelection.end && activeEditorSelection.end <= editorContent.length && selectedEditorCharacterCount <= maxAgentSelectionCharacters && sliceUnicodeRange(editorContent, activeEditorSelection.start, activeEditorSelection.end, maxAgentSelectionCharacters).trim())
   const characters = data?.workspace.characters ?? []
   const notes = data?.workspace.notes ?? []
+  const timeline = data?.workspace.timeline ?? []
+  const worldAssets = data?.workspace.world_assets ?? []
+  const { items: contextItems, selectedSets: selectedContextSets, toggle: toggleContextItem, setAll: setAllContextItems } = useAgentContextSelection(data?.workspace.workspace_id ?? '', characters, notes, timeline, worldAssets)
   const chat = data?.workspace.chat ?? []
   const chatRetry = data ? chatRequestRetryRef.current.get(data.workspace.workspace_id) : undefined
   const project = data?.workspace.project
@@ -313,17 +405,17 @@ export default function App() {
   }, [activeChapterId])
 
   const saveStatusLabel = !data
-    ? switchingWorkspace ? '正在切换项目' : '正在读取工作区'
-    : saveState === 'saving' ? '保存中' : saveState === 'dirty' ? '未保存' : saveState === 'error' ? '保存失败' : '已保存'
+    ? switchingWorkspace ? 'Switching project' : 'Loading workspace'
+    : saveState === 'saving' ? 'Saving' : saveState === 'dirty' ? 'Unsaved' : saveState === 'error' ? 'Save failed' : 'Saved'
   const assistantProviderLabel = !settingsDraft
-    ? '读取模型配置…'
+    ? '读取模型配置'
     : settingsDraft.provider === 'local' || !settingsDraft.provider
       ? '本地规则引擎'
       : `${settingsDraft.provider === 'openai' ? 'OpenAI 兼容' : '兼容接口'} · ${settingsDraft.model.trim() || '未填写模型'}`
-  const sendLocked = creatingProject || deletingProject || creatingBackup || exportingDocument || importingBackup || switchingWorkspace || checkingChatRecovery || savingContextItem || savingProject || savingSettings || chapterActionBusy || saveState === 'saving'
+  const sendLocked = creatingProject || deletingProject || creatingBackup || exportingDocument || importingBackup || switchingWorkspace || checkingChatRecovery || savingContextItem || savingTimeline || savingWorldAsset || savingProject || savingSettings || chapterActionBusy || saveState === 'saving'
   const projectActionBusy = sending || sendLocked || exportingDocument
   const editorLocked = creatingProject || deletingProject || creatingBackup || importingBackup || switchingWorkspace || chapterActionBusy || chapterBodyLoading || saveState === 'saving'
-  const modalOpen = projectDialogOpen || projectEditDialogOpen || projectDeleteDialogOpen || characterDialogOpen || noteDialogOpen || searchOpen || helpDialogOpen || rewritePreviewOpen || revisionDialogOpen
+  const modalOpen = projectDialogOpen || projectEditDialogOpen || projectDeleteDialogOpen || characterDialogOpen || noteDialogOpen || timelineDialogOpen || worldAssetDialogOpen || searchOpen || helpDialogOpen || rewritePreviewOpen || revisionDialogOpen
 
   useWorkbenchEffects({
     saveErrorMessageRef,
@@ -352,6 +444,25 @@ export default function App() {
     chat,
     chatEndRef,
     sending,
+    helpDialogOpen,
+    projectDialogOpen,
+    projectEditDialogOpen,
+    projectDeleteDialogOpen,
+    characterDialogOpen,
+    noteDialogOpen,
+    timelineDialogOpen,
+    worldAssetDialogOpen,
+    rewritePreviewOpen,
+    revisionDialogOpen,
+    searchOpen,
+    lastOutsideModalFocusRef,
+    modalWasOpenRef,
+    modalOpen,
+  })
+
+  useWorkbenchShortcuts({
+    hasData: Boolean(data),
+    hasCurrentChapter: Boolean(currentChapter),
     editorLocked,
     saveChapterRef,
     helpDialogOpen,
@@ -360,6 +471,8 @@ export default function App() {
     projectDeleteDialogOpen,
     characterDialogOpen,
     noteDialogOpen,
+    timelineDialogOpen,
+    worldAssetDialogOpen,
     rewritePreviewOpen,
     revisionDialogOpen,
     searchOpen,
@@ -368,14 +481,13 @@ export default function App() {
     savingProject,
     creatingProject,
     savingContextItem,
+    savingTimeline,
+    savingWorldAsset,
     agentRequestRef,
     setCancellingRequest,
     setSearchQuery,
     setSelectedSearchIndex,
     setSearchOpen,
-    lastOutsideModalFocusRef,
-    modalWasOpenRef,
-    modalOpen,
     setRewritePreviewOpen,
     setRevisionDialogOpen,
     setHelpDialogOpen,
@@ -384,10 +496,20 @@ export default function App() {
     setProjectDialogOpen,
     setCharacterDialogOpen,
     setNoteDialogOpen,
+    setTimelineDialogOpen,
+    setWorldAssetDialogOpen,
   })
 
   const lineCount = Math.max(1, editorContent.split('\n').length)
   const editorWordCount = useMemo(() => countTextWords(editorContent), [editorContent])
+  const editorStyle = useMemo(() => ({
+    '--editor-font-size': `${editorPreferences.fontSize}px`,
+    '--editor-font-family': editorPreferences.fontFamily === 'sans'
+      ? '"Noto Sans SC", "Microsoft YaHei", sans-serif'
+      : editorPreferences.fontFamily === 'mono'
+        ? '"Cascadia Mono", Consolas, monospace'
+        : '"Noto Serif SC", "Songti SC", STSong, serif',
+  }) as CSSProperties, [editorPreferences])
 
   useEffect(() => {
     const workspaceID = data?.workspace.workspace_id
@@ -426,7 +548,9 @@ export default function App() {
     editorContent,
     characters,
     notes,
-  }), [chapterBodyLoading, chapterSearchResults, characters, currentChapter, data, editorContent, editorSummary, editorTitle, notes, projectActionBusy, searchOpen, searchQuery])
+    timeline,
+    worldAssets,
+  }), [chapterBodyLoading, chapterSearchResults, characters, currentChapter, data, editorContent, editorSummary, editorTitle, notes, projectActionBusy, searchOpen, searchQuery, timeline, worldAssets])
   const activeSearchIndex = Math.min(selectedSearchIndex, Math.max(0, searchResults.length - 1))
 
   useEffect(() => {
@@ -675,6 +799,44 @@ export default function App() {
     setContextDialogError,
     setError,
   })
+  const {
+    openTimelineCreate,
+    openTimelineEdit,
+    saveTimelineEvent,
+    deleteTimelineEvent,
+  } = createTimelineActions({
+    data,
+    setData,
+    activeWorkspaceRef,
+    projectActionBusy,
+    timelineEditingId,
+    setTimelineEditingId,
+    timelineDraft,
+    setTimelineDraft,
+    setTimelineDialogOpen,
+    setSavingTimeline,
+    setTimelineDialogError,
+    setError,
+  })
+  const {
+    openWorldAssetCreate,
+    openWorldAssetEdit,
+    saveWorldAsset,
+    deleteWorldAsset,
+  } = createWorldAssetActions({
+    data,
+    setData,
+    activeWorkspaceRef,
+    projectActionBusy,
+    editingId: worldAssetEditingId,
+    setEditingId: setWorldAssetEditingId,
+    draft: worldAssetDraft,
+    setDraft: setWorldAssetDraft,
+    setOpen: setWorldAssetDialogOpen,
+    setSaving: setSavingWorldAsset,
+    setDialogError: setWorldAssetDialogError,
+    setError,
+  })
   const activateSearchResult = (result: PaletteResult) => {
     if (result.disabled) return
     closeSearch()
@@ -697,6 +859,20 @@ export default function App() {
       openNoteEdit(note)
       return
     }
+    if (result.kind === 'timeline' && result.entityId !== undefined) {
+      const event = timeline.find((item) => item.id === result.entityId)
+      if (!event) return
+      openTimelineView()
+      openTimelineEdit(event)
+      return
+    }
+    if (result.kind === 'world-asset' && result.entityId !== undefined) {
+      const asset = worldAssets.find((item) => item.id === result.entityId)
+      if (!asset) return
+      openWorldAssetsView()
+      openWorldAssetEdit(asset)
+      return
+    }
     switch (result.id) {
       case 'new-chapter':
         setActiveActivity('explorer')
@@ -710,6 +886,20 @@ export default function App() {
       case 'new-note':
         openNotesView()
         openNoteCreate()
+        break
+      case 'new-timeline':
+        openTimelineView()
+        openTimelineCreate()
+        break
+      case 'open-timeline':
+        openTimelineView()
+        break
+      case 'new-world-asset':
+        openWorldAssetsView()
+        openWorldAssetCreate()
+        break
+      case 'open-world-assets':
+        openWorldAssetsView()
         break
       case 'edit-project':
         openProjectEdit()
@@ -775,6 +965,7 @@ export default function App() {
     applyGeneratedText,
   } = createAgentActions({
     data,
+    contextItems,
     setData,
     projectActionBusy,
     chapterBodyLoading,
@@ -884,7 +1075,7 @@ export default function App() {
       return
     }
     const rewriteWarning = hasEditedRewriteDraft ? '\n当前有尚未应用的改写编辑；导入后切换项目会丢弃它。' : ''
-    if (!window.confirm('备份将作为新项目导入；同名项目会标记为“恢复副本”。最近 60 条对话会恢复。未发送的 Agent 输入不会带入新项目。API Key 不包含在备份中，接口地址中的凭据参数也会移除；导入后请检查模型设置。' + rewriteWarning + '\n继续？')) return
+    if (!window.confirm('备份将作为新项目导入；同名项目会标记为“恢复副本”。最多 60 条对话会恢复。未发送的 Agent 输入不会带入新项目。API Key 不包含在备份中；导入后请检查模型设置。' + rewriteWarning + '\n继续吗？')) return
 
     setImportingBackup(true)
     setError('')
@@ -983,7 +1174,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${editorPreferences.focusMode ? 'focus-mode' : ''} ${editorPreferences.theme === 'light' ? 'theme-light' : ''}`}>
       <input ref={backupInputRef} type="file" accept="application/json,.json" hidden onChange={(event) => void importProjectBackup(event)} />
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{chatUnread && !chatIsVisibleAtLatest() ? '写作 Agent 已回复，对话中有未读消息。' : ''}</span>
       <header className="topbar">
@@ -1000,12 +1191,12 @@ export default function App() {
             <button className="create-project-button" title="新建小说项目" aria-label="新建小说项目" onClick={() => setProjectDialogOpen(true)} disabled={!data || projectActionBusy}><Plus size={14} /></button>
         </div>
         <div className="topbar-center">
-          <button className="command-search" onClick={openSearch} title="搜索（Ctrl/⌘ + K）" aria-label="搜索章节、角色、便笺或命令" disabled={!data}><Search size={14} /><span>搜索项目内容或命令</span><kbd>⌘/Ctrl K</kbd></button>
+          <button className="command-search" onClick={openSearch} title="搜索（Ctrl/Cmd + K）" aria-label="搜索章节、角色、便笺、时间线、世界观资料或命令" disabled={!data}><Search size={14} /><span>搜索项目内容、资料或命令</span><kbd>⌘ Ctrl K</kbd></button>
         </div>
         <div className="topbar-actions">
           <div className="save-indicator" aria-hidden="true"><span className={`status-dot ${saveState === 'saved' ? 'green' : saveState === 'saving' ? 'amber' : 'red'}`} />{saveStatusLabel}</div>
           <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{saveStatusLabel}</span>
-          <button className="icon-button mobile-search" onClick={openSearch} title="搜索（Ctrl/⌘ + K）" aria-label="搜索当前项目" disabled={!data}><Search size={16} /></button>
+          <button className="icon-button mobile-search" onClick={openSearch} title="搜索（Ctrl/Cmd + K）" aria-label="搜索当前项目" disabled={!data}><Search size={16} /></button>
           <button className="icon-button" onClick={() => setHelpDialogOpen(true)} title="帮助与快捷键" aria-label="帮助与快捷键"><CircleHelp size={16} /></button>
           <div className="avatar">W</div>
         </div>
@@ -1018,6 +1209,8 @@ export default function App() {
             <ActivityButton icon={<BookOpen size={19} />} active={activeActivity === 'chapters'} label="章节" badge={chapters.length} onClick={() => { setActiveActivity('chapters'); setShowMobileSidebar(true) }} />
             <ActivityButton icon={<Users size={19} />} active={activeActivity === 'characters'} label="角色" onClick={() => { setActiveActivity('characters'); setShowMobileSidebar(true) }} />
             <ActivityButton icon={<Lightbulb size={19} />} active={activeActivity === 'notes'} label="灵感便笺" onClick={() => { setActiveActivity('notes'); setShowMobileSidebar(true) }} />
+            <ActivityButton icon={<CalendarClock size={19} />} active={activeActivity === 'timeline'} label="故事时间线" onClick={openTimelineView} />
+            <ActivityButton icon={<Globe2 size={19} />} active={activeActivity === 'world'} label="世界观资料" onClick={openWorldAssetsView} />
           </div>
           <div className="activity-group bottom">
             <ActivityButton icon={<Settings2 size={19} />} active={activeActivity === 'settings'} label="设置" onClick={() => { setActiveActivity('settings'); setShowMobileSidebar(true) }} />
@@ -1027,16 +1220,18 @@ export default function App() {
 
         <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${showMobileSidebar ? 'mobile-open' : ''}`}>
           <div className="sidebar-header">
-            <span>{activeActivity === 'settings' ? '设置' : activeActivity === 'characters' ? '角色档案' : activeActivity === 'notes' ? '灵感便笺' : '资源管理器'}</span>
+            <span>{activeActivity === 'settings' ? '设置' : activeActivity === 'characters' ? '角色档案' : activeActivity === 'notes' ? '灵感便笺' : activeActivity === 'timeline' ? '故事时间线' : activeActivity === 'world' ? '世界观资料' : '资源管理器'}</span>
             <div className="sidebar-header-actions">
               <button className="subtle-icon" onClick={() => setSidebarCollapsed(true)} title="收起侧栏" aria-label="收起侧栏"><LayoutPanelLeft size={15} /></button>
               <button className="subtle-icon mobile-close" onClick={() => setShowMobileSidebar(false)} title="关闭" aria-label="关闭侧栏"><X size={15} /></button>
             </div>
           </div>
-          {activeActivity === 'settings' && <SettingsView settings={settingsDraft} setSettings={updateSettingsDraft} onSave={() => void saveSettings()} saved={settingsSaved} saving={savingSettings} locked={projectActionBusy} dirty={settingsDirty} error={settingsError} />}
+          {activeActivity === 'settings' && <SettingsView settings={settingsDraft} setSettings={updateSettingsDraft} onSave={() => void saveSettings()} saved={settingsSaved} saving={savingSettings} locked={projectActionBusy} dirty={settingsDirty} error={settingsError} editorPreferences={editorPreferences} setEditorPreferences={setEditorPreferences} />}
           {activeActivity === 'characters' && <CharactersView characters={characters} busy={projectActionBusy} onCreate={openCharacterCreate} onEdit={openCharacterEdit} onDelete={(character) => void deleteCharacter(character)} />}
           {activeActivity === 'notes' && <NotesView notes={notes} busy={projectActionBusy} onCreate={openNoteCreate} onEdit={openNoteEdit} onDelete={(note) => void deleteNote(note)} />}
-          {activeActivity !== 'settings' && activeActivity !== 'characters' && activeActivity !== 'notes' && (
+          {activeActivity === 'timeline' && <TimelineView events={timeline} chapters={chapters} busy={projectActionBusy} onCreate={openTimelineCreate} onEdit={openTimelineEdit} onDelete={(event) => void deleteTimelineEvent(event)} onOpenChapter={(id) => void selectChapter(id, true)} />}
+          {activeActivity === 'world' && <WorldAssetsView assets={worldAssets} chapters={chapters} busy={projectActionBusy} onCreate={openWorldAssetCreate} onEdit={openWorldAssetEdit} onDelete={(asset) => void deleteWorldAsset(asset)} onOpenChapter={(id) => void selectChapter(id, true)} />}
+          {activeActivity !== 'settings' && activeActivity !== 'characters' && activeActivity !== 'notes' && activeActivity !== 'timeline' && activeActivity !== 'world' && (
             <ExplorerView project={project} chapters={chapters} activeChapterId={activeChapterId} setActiveChapterId={(id) => void selectChapter(id, true)} onCreate={createChapter} onExport={exportProjectMarkdown} onExportDocx={() => void exportProjectDocument('docx')} onBackup={exportProjectBackup} onRestore={() => backupInputRef.current?.click()} onEditProject={openProjectEdit} onDeleteProject={openProjectDelete} canDeleteProject={projects.length > 1} projectBusy={projectActionBusy} onOpenWorld={openProjectContextView} onOpenCharacters={openCharactersView} onOpenNotes={openNotesView} onMove={(id, direction) => void moveChapter(id, direction)} onDelete={(chapter) => void deleteChapter(chapter)} chapterBusy={projectActionBusy} activeActivity={activeActivity} />
           )}
         </aside>
@@ -1054,55 +1249,102 @@ export default function App() {
                 {error && projects.length > 0 && <p className="workspace-switch-hint">也可以从左上角的项目选择器打开其他项目。</p>}
                 {error && <div className="workspace-load-actions">
                   <button className="primary-button" onClick={() => void loadWorkspace(activeWorkspaceRef.current)}>重试</button>
-                  {error === '还没有小说项目，请先创建一个项目。' && <button className="toolbar-button" onClick={() => setProjectDialogOpen(true)}>新建项目</button>}
+                  {error === 'No projects yet. Create a project first.' && <button className="toolbar-button" onClick={() => setProjectDialogOpen(true)}>新建项目</button>}
                 </div>}
               </div>
             </section>
           ) : (
           <>
           <div className="editor-tabs">
-          <div className="editor-tab active"><FileText size={14} /><span>{currentChapter ? `第 ${currentChapter.number} 章 · ${editorTitle || currentChapter.title}` : project?.title ?? '欢迎页'}</span><span className="tab-close">×</span></div>
+          <div className="editor-tab active"><FileText size={14} /><span>{currentChapter ? `第${currentChapter.number}章 · ${editorTitle || currentChapter.title}` : project?.title ?? '欢迎'}</span><span className="tab-close">×</span></div>
             <button className="new-tab" onClick={createChapter} title="新建章节" aria-label="新建章节" disabled={projectActionBusy}><Plus size={15} /></button>
             <div className="editor-tab-actions"><button className="subtle-icon" onClick={openSearch} title="打开命令面板" aria-label="打开命令面板" disabled={!data}><MoreHorizontal size={16} /></button></div>
           </div>
 
           <div className="workbench">
-            <section className="editor-pane">
-              {currentChapter ? (
-                <>
-                  <div className="editor-toolbar">
-                    <div className="breadcrumbs"><span className="crumb-muted">{project?.title}</span><ChevronRight size={13} /><span>章节</span><ChevronRight size={13} /><span className="crumb-current">第 {currentChapter.number} 章</span></div>
-                    <div className="editor-actions"><button className="toolbar-button" onClick={() => void saveChapter()} disabled={editorLocked}><Save size={14} /> 保存</button><button className="toolbar-button" onClick={() => void openChapterRevisions()} disabled={editorLocked} title="查看和恢复章节版本"><History size={14} /> 版本</button><button className="toolbar-button primary-soft" onClick={() => void applyGeneratedText()} disabled={editorLocked || projectActionBusy || settingsDirty}><WandSparkles size={14} /> {sending ? '生成中' : 'AI 续写'}</button></div>
-                  </div>
-                  <div className="editor-scroll">
-                    {chapterBodyLoading && !chapterLoadError && <div className="revision-empty" role="status">正在读取章节正文…</div>}
-                    {chapterLoadError && <div className="revision-empty" role="alert">{chapterLoadError} <button className="toolbar-button" onClick={() => setChapterLoadRetry((retry) => retry + 1)}>重试</button></div>}
-                    <div className="chapter-heading">
-                      <input className="chapter-title-input" value={editorTitle} onChange={(event) => { setEditorTitle(event.target.value); markEditorDirty() }} maxLength={120} disabled={editorLocked} aria-label="章节标题" />
-                      <div className="chapter-meta"><label className={`chapter-status ${statusClass(editorStatus)}`}><span /><select value={editorStatus} onChange={(event) => { setEditorStatus(event.target.value); markEditorDirty() }} disabled={editorLocked} aria-label="章节状态"><option value="outline">大纲</option><option value="draft">草稿</option><option value="review">审阅中</option><option value="done">已完成</option></select></label><span className="meta-separator" /><span>{formatNumber(editorWordCount)} 字</span><span className="meta-separator" /><span>最后编辑于 {relativeTime(currentChapter.last_edited_at)}</span></div>
-                    </div>
-                    <div className="summary-box"><div className="summary-label"><Target size={13} /> 本章目标</div><textarea value={editorSummary} onChange={(event) => { setEditorSummary(event.target.value); markEditorDirty() }} maxLength={1200} disabled={editorLocked} placeholder="写下这一章要改变什么，Agent 会将它作为写作锚点。" rows={2} /></div>
-                    <div className="editor-area">
-                      <div className="line-numbers" aria-hidden="true">{Array.from({ length: lineCount }, (_, index) => <span key={index}>{index + 1}</span>)}</div>
-                      <textarea ref={editorRef} className="chapter-editor" value={editorContent} onChange={(event) => updateEditor(event.target.value)} onSelect={captureEditorSelection} onKeyDown={handleEditorKeyDown} disabled={editorLocked} spellCheck={false} placeholder={chapterBodyLoading ? '正在读取章节正文…' : '从这里开始写下你的故事……'} aria-label="章节正文" />
-                    </div>
-                  </div>
-                  <div className="editor-footer"><span><Zap size={12} /> 编辑器已就绪</span><span>Markdown 支持</span><span>⌘ S 保存</span></div>
-                </>
-              ) : <EmptyEditor onCreate={createChapter} disabled={!project || projectActionBusy} />}
-            </section>
+            <EditorPane
+              currentChapter={currentChapter}
+              project={project}
+              projectActionBusy={projectActionBusy}
+              editorLocked={editorLocked}
+              settingsDirty={settingsDirty}
+              sending={sending}
+              chapterBodyLoading={chapterBodyLoading}
+              chapterLoadError={chapterLoadError}
+              onRetryChapterLoad={() => setChapterLoadRetry((retry) => retry + 1)}
+              onCreateChapter={createChapter}
+              onSaveChapter={saveChapter}
+              onOpenChapterRevisions={openChapterRevisions}
+              onApplyGeneratedText={applyGeneratedText}
+              focusMode={editorPreferences.focusMode}
+              onToggleFocusMode={() => setEditorPreferences({ ...editorPreferences, focusMode: !editorPreferences.focusMode })}
+              editorTitle={editorTitle}
+              onTitleChange={(value) => { setEditorTitle(value); markEditorDirty() }}
+              editorStatus={editorStatus}
+              onStatusChange={(value) => { setEditorStatus(value); markEditorDirty() }}
+              editorWordCount={editorWordCount}
+              editorSummary={editorSummary}
+              onSummaryChange={(value) => { setEditorSummary(value); markEditorDirty() }}
+              editorStyle={editorStyle}
+              lineCount={lineCount}
+              editorRef={editorRef}
+              editorContent={editorContent}
+              onContentChange={(event) => updateEditor(event.target.value)}
+              onSelection={captureEditorSelection}
+              onEditorKeyDown={handleEditorKeyDown}
+            />
 
-            {!assistantCollapsed && <aside className="assistant-pane">
-              <div className="assistant-header"><div className="assistant-title"><div className="agent-avatar"><Bot size={16} /></div><div><strong>写作 Agent</strong><span role="status" aria-live="polite" aria-atomic="true"><span className={`status-dot ${sending ? 'amber' : 'green'}`} /> {cancellingRequest ? '正在确认取消…' : sending ? '正在请求模型…' : assistantProviderLabel}</span></div></div>{sending && <button className="subtle-icon" onClick={cancelAgentRequest} title={cancellingRequest ? '正在确认取消' : '取消当前请求'} aria-label={cancellingRequest ? '正在确认取消 Agent 请求' : '取消当前 Agent 请求'} disabled={cancellingRequest}><X size={14} /></button>}<button className="subtle-icon" onClick={collapseAssistantPanel} title="收起 Agent" aria-label="收起 Agent 面板"><PanelRightClose size={15} /></button></div>
-              <div className="assistant-tabs" role="tablist" aria-label="写作 Agent 面板">
-                <button id="assistant-tab-chat" role="tab" aria-label={chatUnread ? '对话（有未读回复）' : '对话'} aria-selected={assistantTab === 'chat'} aria-controls="assistant-panel-chat" tabIndex={assistantTab === 'chat' ? 0 : -1} className={assistantTab === 'chat' ? 'active' : ''} onClick={() => activateAssistantTab('chat')} onKeyDown={(event) => handleAssistantTabKeyDown(event, 'chat')}><MessageSquare size={13} /> 对话{chatUnread && <span className="assistant-unread-dot" aria-hidden="true" />}</button>
-                <button id="assistant-tab-outline" role="tab" aria-selected={assistantTab === 'outline'} aria-controls="assistant-panel-outline" tabIndex={assistantTab === 'outline' ? 0 : -1} className={assistantTab === 'outline' ? 'active' : ''} onClick={() => activateAssistantTab('outline')} onKeyDown={(event) => handleAssistantTabKeyDown(event, 'outline')}><ListTodo size={13} /> 大纲</button>
-                <button id="assistant-tab-context" role="tab" aria-selected={assistantTab === 'context'} aria-controls="assistant-panel-context" tabIndex={assistantTab === 'context' ? 0 : -1} className={assistantTab === 'context' ? 'active' : ''} onClick={() => activateAssistantTab('context')} onKeyDown={(event) => handleAssistantTabKeyDown(event, 'context')}><BrainCircuit size={13} /> 上下文</button>
-              </div>
-              <ChatPanel chat={chat} input={chatInput} setInput={updateChatInput} send={sendMessage} cancel={cancelAgentRequest} retryPrompt={chatRetry?.safeToRetry && !chatRetry.needsReconcile ? chatRetry.message : undefined} retryNeedsReconcile={Boolean(chatRetry?.needsReconcile)} retryNeedsReview={Boolean(chatRetry?.requiresReview && !chatRetry.needsReconcile)} checkChatRecovery={checkChatRecovery} checkingChatRecovery={checkingChatRecovery} retryAfterReview={retryAfterReview} sending={sending} cancelling={cancellingRequest} hasUnread={chatUnread} onJumpToLatest={jumpToLatestChat} onChatScroll={handleChatScroll} chatScrollRef={chatScrollRef} locked={sendLocked || chapterBodyLoading} settingsUnsaved={settingsDirty} hasChapter={Boolean(currentChapter)} suggestions={suggestions} mode={writingMode} setMode={changeWritingMode} chatEndRef={chatEndRef} hidden={assistantTab !== 'chat'} selectionCharacterCount={selectedEditorCharacterCount} selectionHasText={activeEditorSelectionHasText} clearSelection={() => setEditorSelection(null)} applyTarget={chatApplyTarget} onPreviewRewrite={() => setRewritePreviewOpen(true)} />
-              <OutlinePanel chapters={chapters} activeChapterId={activeChapterId} setActiveChapterId={(id) => void selectChapter(id)} onCreate={createChapter} busy={projectActionBusy} hidden={assistantTab !== 'outline'} />
-              <ContextPanel characters={characters} notes={notes} project={project} projectBusy={projectActionBusy} onEditProject={openProjectEdit} onEditCharacter={(character) => { openCharactersView(); openCharacterEdit(character) }} onEditNote={(note) => { openNotesView(); openNoteEdit(note) }} hidden={assistantTab !== 'context'} />
-            </aside>}
+            {!assistantCollapsed && <AssistantPane
+              assistantTab={assistantTab}
+              assistantProviderLabel={assistantProviderLabel}
+              sending={sending}
+              cancellingRequest={cancellingRequest}
+              chatUnread={chatUnread}
+              onCancel={cancelAgentRequest}
+              onCollapse={collapseAssistantPanel}
+              onActivateTab={activateAssistantTab}
+              onTabKeyDown={handleAssistantTabKeyDown}
+              chat={chat}
+              chatInput={chatInput}
+              onChatInputChange={updateChatInput}
+              onSendMessage={sendMessage}
+              chatRetry={chatRetry}
+              onCheckChatRecovery={checkChatRecovery}
+              checkingChatRecovery={checkingChatRecovery}
+              onRetryAfterReview={retryAfterReview}
+              onJumpToLatest={jumpToLatestChat}
+              onChatScroll={handleChatScroll}
+              chatScrollRef={chatScrollRef}
+              chatEndRef={chatEndRef}
+              sendLocked={sendLocked}
+              chapterBodyLoading={chapterBodyLoading}
+              settingsDirty={settingsDirty}
+              currentChapter={currentChapter}
+              suggestions={suggestions}
+              writingMode={writingMode}
+              onWritingModeChange={changeWritingMode}
+              selectionCharacterCount={selectedEditorCharacterCount}
+              selectionHasText={activeEditorSelectionHasText}
+              onClearSelection={() => setEditorSelection(null)}
+              chatApplyTarget={chatApplyTarget}
+              onPreviewRewrite={() => setRewritePreviewOpen(true)}
+              chapters={chapters}
+              activeChapterId={activeChapterId}
+              onSelectChapter={(id) => void selectChapter(id)}
+              onCreateChapter={createChapter}
+              projectActionBusy={projectActionBusy}
+              characters={characters}
+              notes={notes}
+              timeline={timeline}
+              worldAssets={worldAssets}
+              selectedContextSets={selectedContextSets}
+              onToggleContextItem={toggleContextItem}
+              onSetAllContextItems={setAllContextItems}
+              project={project}
+              onEditProject={openProjectEdit}
+              onEditCharacter={(character) => { openCharactersView(); openCharacterEdit(character) }}
+              onEditNote={(note) => { openNotesView(); openNoteEdit(note) }}
+            />}
           </div>
           <footer className="statusbar"><div className="status-left"><span><GitBranchIcon /> main</span><span><CircleStatus /> 单用户模式</span><span className="status-mobile-hide">{project?.genre ?? '创作工作区'}</span></div><div className="status-right"><span>{stats ? `${formatNumber(stats.word_count)} / ${formatNumber(stats.word_target)} 字` : '—'}</span><span className="status-progress"><span style={{ width: `${Math.min(100, (stats?.completion_rate ?? 0) * 100)}%` }} /></span><span className="status-mobile-hide">UTF-8</span><span>Go + React</span></div></footer>
           </>
@@ -1142,7 +1384,7 @@ export default function App() {
         restoreChapterRevision={restoreChapterRevision}
         sending={sending}
       />}
-      {projectDeleteDialogOpen && project && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !deletingProject) setProjectDeleteDialogOpen(false) }}><section className="project-dialog delete-project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-delete-title" aria-describedby="project-delete-warning"><header><div><span className="dialog-kicker">DELETE WORKSPACE</span><h2 id="project-delete-title">删除小说项目</h2></div><button className="subtle-icon" onClick={() => setProjectDeleteDialogOpen(false)} aria-label="关闭删除确认" disabled={deletingProject}><X size={16} /></button></header><p className="delete-project-warning" id="project-delete-warning">项目 <strong>{project.title}</strong> 的章节、角色、便笺、聊天记录和模型设置都会被永久删除，当前未保存的编辑也会丢失。此操作无法撤销。</p><label>输入项目名称以确认<input autoFocus value={projectDeleteInput} onChange={(event) => setProjectDeleteInput(event.target.value)} onKeyDown={(event) => { if (!isIMEComposing(event.nativeEvent) && event.key === 'Enter' && projectDeleteInput === project.title && !projectActionBusy) void confirmProjectDelete() }} maxLength={80} /></label>{projectDeleteError && <p className="dialog-error" role="alert">{projectDeleteError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectDeleteDialogOpen(false)} disabled={deletingProject}>取消</button><button className="danger-button" onClick={() => void confirmProjectDelete()} disabled={projectDeleteInput !== project.title || projectActionBusy || projects.length <= 1}>{deletingProject ? '正在删除…' : '永久删除项目'}</button></div></section></div>}
+      {projectDeleteDialogOpen && project && <div className="modal-backdrop"><section className="project-dialog delete-project-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">DELETE WORKSPACE</span><h2>删除小说项目</h2></div><button className="subtle-icon" onClick={() => setProjectDeleteDialogOpen(false)} disabled={deletingProject}><X size={16} /></button></header><p>项目 <strong>{project.title}</strong> 的章节、角色、便笺、聊天记录和设置会被永久删除。</p><label>输入项目名称以确认<input autoFocus value={projectDeleteInput} onChange={(event) => setProjectDeleteInput(event.target.value)} maxLength={80} /></label>{projectDeleteError && <p className="dialog-error" role="alert">{projectDeleteError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectDeleteDialogOpen(false)}>取消</button><button className="danger-button" onClick={() => void confirmProjectDelete()} disabled={projectDeleteInput !== project.title || projectActionBusy || projects.length <= 1}>{deletingProject ? "正在删除…" : "永久删除项目"}</button></div></section></div>}
       {searchOpen && <CommandPalette
         query={searchQuery}
         results={searchResults}
@@ -1154,11 +1396,13 @@ export default function App() {
         onActivate={activateSearchResult}
         onClose={closeSearch}
       />}
-      {helpDialogOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setHelpDialogOpen(false) }}><section className="project-dialog help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-dialog-title"><header><div><span className="dialog-kicker">QUICK HELP</span><h2 id="help-dialog-title">帮助与快捷键</h2></div><button className="subtle-icon" onClick={() => setHelpDialogOpen(false)} aria-label="关闭帮助"><X size={16} /></button></header><p className="help-intro">使用快捷键更快地搜索项目、保存章节和操作写作 Agent。</p><div className="help-shortcuts"><div><kbd>Ctrl / ⌘ + K</kbd><span>搜索章节、角色、便笺和命令</span></div><div><kbd>Ctrl / ⌘ + S</kbd><span>保存当前章节（编辑器中）</span></div><div><kbd>Tab / Shift + Tab</kbd><span>选中行可缩进/反向缩进；无选区时 Tab 插入空格，Shift + Tab 减少当前行缩进</span></div><div><kbd>↑ / ↓</kbd><span>在搜索结果中移动</span></div><div><kbd>Enter</kbd><span>打开搜索结果或发送 Agent 消息</span></div><div><kbd>Shift + Enter</kbd><span>在 Agent 输入框中换行</span></div><div><kbd>Esc</kbd><span>关闭搜索/帮助；没有面板打开时取消 Agent 请求</span></div></div><div className="dialog-actions"><button className="primary-button" onClick={() => setHelpDialogOpen(false)}>完成</button></div></section></div>}
-      {projectEditDialogOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !savingProject) setProjectEditDialogOpen(false) }}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-edit-title"><header><div><span className="dialog-kicker">PROJECT DETAILS</span><h2 id="project-edit-title">编辑项目资料</h2></div><button className="subtle-icon" onClick={() => setProjectEditDialogOpen(false)} aria-label="关闭" disabled={savingProject}><X size={16} /></button></header><label>项目名称<input autoFocus value={projectDraft.title} onChange={(event) => setProjectDraft({ ...projectDraft, title: event.target.value })} maxLength={80} disabled={savingProject} /></label><label>副标题<input value={projectDraft.subtitle} onChange={(event) => setProjectDraft({ ...projectDraft, subtitle: event.target.value })} placeholder="可选" maxLength={120} disabled={savingProject} /></label><label>题材<input value={projectDraft.genre} onChange={(event) => setProjectDraft({ ...projectDraft, genre: event.target.value })} placeholder="例如：近未来 · 悬疑" maxLength={80} disabled={savingProject} /></label><label>故事设定<textarea value={projectDraft.premise} onChange={(event) => setProjectDraft({ ...projectDraft, premise: event.target.value })} rows={3} maxLength={500} disabled={savingProject} /></label><label>目标字数<input type="number" min={1} step={1} value={projectDraft.word_target} onChange={(event) => setProjectDraft({ ...projectDraft, word_target: Math.trunc(Number(event.target.value) || 0) })} disabled={savingProject} /></label>{projectEditError && <p className="dialog-error" role="alert">{projectEditError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectEditDialogOpen(false)} disabled={savingProject}>取消</button><button className="primary-button" onClick={() => void saveProject()} disabled={!projectDraft.title.trim() || projectDraft.word_target < 1 || savingProject || sending || savingContextItem || savingSettings || chapterActionBusy || saveState === 'saving'}>{savingProject ? '正在保存…' : <><Check size={14} /> 保存资料</>}</button></div></section></div>}
-      {projectDialogOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingProject) setProjectDialogOpen(false) }}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title"><header><div><span className="dialog-kicker">NEW WORKSPACE</span><h2 id="project-dialog-title">创建小说项目</h2></div><button className="subtle-icon" onClick={() => setProjectDialogOpen(false)} aria-label="关闭" disabled={creatingProject}><X size={16} /></button></header><label>项目名称<input autoFocus value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} placeholder="例如：雾港来信" maxLength={80} disabled={creatingProject} /></label><label>题材<input value={projectGenre} onChange={(event) => setProjectGenre(event.target.value)} placeholder="近未来 · 悬疑" maxLength={80} disabled={creatingProject} /></label><label>故事设定<textarea value={projectPremise} onChange={(event) => setProjectPremise(event.target.value)} placeholder="用一两句话描述故事的核心设定。" rows={3} maxLength={500} disabled={creatingProject} /></label><div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectDialogOpen(false)} disabled={creatingProject}>取消</button><button className="primary-button" onClick={() => void createProject()} disabled={!projectTitle.trim() || creatingProject || sending || saveState === 'saving'}>{creatingProject ? '正在创建…' : <><Plus size={14} /> 创建项目</>}</button></div></section></div>}
-      {characterDialogOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !savingContextItem) setCharacterDialogOpen(false) }}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="character-dialog-title"><header><div><span className="dialog-kicker">PROJECT CHARACTER</span><h2 id="character-dialog-title">{characterEditingId === null ? '新建角色' : '编辑角色'}</h2></div><button className="subtle-icon" onClick={() => setCharacterDialogOpen(false)} aria-label="关闭" disabled={savingContextItem}><X size={16} /></button></header><label>角色名称<input autoFocus value={characterDraft.name} onChange={(event) => setCharacterDraft({ ...characterDraft, name: event.target.value })} placeholder="例如：林澈" maxLength={80} disabled={savingContextItem} /></label><label>身份<input value={characterDraft.role} onChange={(event) => setCharacterDraft({ ...characterDraft, role: event.target.value })} placeholder="主角、导师、对手……" maxLength={100} disabled={savingContextItem} /></label><label>角色描述<textarea value={characterDraft.description} onChange={(event) => setCharacterDraft({ ...characterDraft, description: event.target.value })} placeholder="角色的背景、目标或关键矛盾。" rows={3} maxLength={1000} disabled={savingContextItem} /></label><label>人物特质<input value={characterDraft.traits} onChange={(event) => setCharacterDraft({ ...characterDraft, traits: event.target.value })} placeholder="敏锐、克制、怕水（用逗号分隔）" maxLength={240} disabled={savingContextItem} /></label><label>角色颜色<input className="character-color-input" type="color" value={characterDraft.color || characterColors[0]} onChange={(event) => setCharacterDraft({ ...characterDraft, color: event.target.value })} disabled={savingContextItem} /></label>{contextDialogError && <p className="dialog-error" role="alert">{contextDialogError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setCharacterDialogOpen(false)} disabled={savingContextItem}>取消</button><button className="primary-button" onClick={() => void saveCharacter()} disabled={!characterDraft.name.trim() || projectActionBusy}>{savingContextItem ? '正在保存…' : <><Check size={14} /> {characterEditingId === null ? '添加角色' : '保存修改'}</>}</button></div></section></div>}
-      {noteDialogOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !savingContextItem) setNoteDialogOpen(false) }}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="note-dialog-title"><header><div><span className="dialog-kicker">PROJECT NOTE</span><h2 id="note-dialog-title">{noteEditingId === null ? '新建便笺' : '编辑便笺'}</h2></div><button className="subtle-icon" onClick={() => setNoteDialogOpen(false)} aria-label="关闭" disabled={savingContextItem}><X size={16} /></button></header><label>标题<input autoFocus value={noteDraft.title} onChange={(event) => setNoteDraft({ ...noteDraft, title: event.target.value })} placeholder="一句话概括这个想法" maxLength={120} disabled={savingContextItem} /></label><label>分类<select value={noteDraft.kind} onChange={(event) => setNoteDraft({ ...noteDraft, kind: event.target.value })} disabled={savingContextItem}>{!["idea", "mystery", "craft", "world"].includes(noteDraft.kind) && <option value={noteDraft.kind}>保留原分类：{noteDraft.kind}</option>}<option value="idea">灵感</option><option value="mystery">悬念</option><option value="craft">写作提醒</option><option value="world">世界观</option></select></label><label>内容<textarea value={noteDraft.body} onChange={(event) => setNoteDraft({ ...noteDraft, body: event.target.value })} placeholder="记录线索、设定或之后要处理的想法。" rows={4} maxLength={2000} disabled={savingContextItem} /></label>{contextDialogError && <p className="dialog-error" role="alert">{contextDialogError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setNoteDialogOpen(false)} disabled={savingContextItem}>取消</button><button className="primary-button" onClick={() => void saveNote()} disabled={!noteDraft.title.trim() || projectActionBusy}>{savingContextItem ? '正在保存…' : <><Check size={14} /> {noteEditingId === null ? '添加便笺' : '保存修改'}</>}</button></div></section></div>}
+      {helpDialogOpen && <div className="modal-backdrop"><section className="project-dialog help-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">QUICK HELP</span><h2>帮助与快捷键</h2></div><button className="subtle-icon" onClick={() => setHelpDialogOpen(false)}><X size={16} /></button></header><p>使用快捷键搜索项目、保存章节和操作写作 Agent。</p><div className="dialog-actions"><button className="primary-button" onClick={() => setHelpDialogOpen(false)}>完成</button></div></section></div>}
+      {projectEditDialogOpen && <div className="modal-backdrop"><section className="project-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">PROJECT DETAILS</span><h2>编辑项目资料</h2></div><button className="subtle-icon" onClick={() => setProjectEditDialogOpen(false)} disabled={savingProject}><X size={16} /></button></header><label>项目名称<input autoFocus value={projectDraft.title} onChange={(event) => setProjectDraft({ ...projectDraft, title: event.target.value })} maxLength={80} /></label><label>题材<input value={projectDraft.genre} onChange={(event) => setProjectDraft({ ...projectDraft, genre: event.target.value })} /></label><label>故事设定<textarea value={projectDraft.premise} onChange={(event) => setProjectDraft({ ...projectDraft, premise: event.target.value })} rows={3} /></label>{projectEditError && <p className="dialog-error">{projectEditError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectEditDialogOpen(false)}>取消</button><button className="primary-button" onClick={() => void saveProject()} disabled={!projectDraft.title.trim() || savingProject}>{savingProject ? "正在保存…" : "保存资料"}</button></div></section></div>}
+      {projectDialogOpen && <div className="modal-backdrop"><section className="project-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">NEW WORKSPACE</span><h2>创建小说项目</h2></div><button className="subtle-icon" onClick={() => setProjectDialogOpen(false)} disabled={creatingProject}><X size={16} /></button></header><label>项目名称<input autoFocus value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={80} /></label><label>题材<input value={projectGenre} onChange={(event) => setProjectGenre(event.target.value)} /></label><label>故事设定<textarea value={projectPremise} onChange={(event) => setProjectPremise(event.target.value)} rows={3} /></label><div className="dialog-actions"><button className="toolbar-button" onClick={() => setProjectDialogOpen(false)}>取消</button><button className="primary-button" onClick={() => void createProject()} disabled={!projectTitle.trim() || creatingProject}>创建项目</button></div></section></div>}
+      {characterDialogOpen && <div className="modal-backdrop"><section className="project-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">PROJECT CHARACTER</span><h2>{characterEditingId === null ? "新建角色" : "编辑角色"}</h2></div><button className="subtle-icon" onClick={() => setCharacterDialogOpen(false)} disabled={savingContextItem}><X size={16} /></button></header><label>角色名称<input autoFocus value={characterDraft.name} onChange={(event) => setCharacterDraft({ ...characterDraft, name: event.target.value })} /></label><label>身份<input value={characterDraft.role} onChange={(event) => setCharacterDraft({ ...characterDraft, role: event.target.value })} /></label><label>角色描述<textarea value={characterDraft.description} onChange={(event) => setCharacterDraft({ ...characterDraft, description: event.target.value })} rows={3} /></label>{contextDialogError && <p className="dialog-error">{contextDialogError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setCharacterDialogOpen(false)}>取消</button><button className="primary-button" onClick={() => void saveCharacter()} disabled={!characterDraft.name.trim() || projectActionBusy}>保存</button></div></section></div>}
+      {noteDialogOpen && <div className="modal-backdrop"><section className="project-dialog" role="dialog" aria-modal="true"><header><div><span className="dialog-kicker">PROJECT NOTE</span><h2>{noteEditingId === null ? "新建便笺" : "编辑便笺"}</h2></div><button className="subtle-icon" onClick={() => setNoteDialogOpen(false)} disabled={savingContextItem}><X size={16} /></button></header><label>标题<input autoFocus value={noteDraft.title} onChange={(event) => setNoteDraft({ ...noteDraft, title: event.target.value })} /></label><label>内容<textarea value={noteDraft.body} onChange={(event) => setNoteDraft({ ...noteDraft, body: event.target.value })} rows={4} /></label>{contextDialogError && <p className="dialog-error">{contextDialogError}</p>}<div className="dialog-actions"><button className="toolbar-button" onClick={() => setNoteDialogOpen(false)}>取消</button><button className="primary-button" onClick={() => void saveNote()} disabled={!noteDraft.title.trim() || projectActionBusy}>保存</button></div></section></div>}
+      <TimelineDialog open={timelineDialogOpen} editing={timelineEditingId !== null} draft={timelineDraft} setDraft={setTimelineDraft} chapters={chapters} saving={savingTimeline} error={timelineDialogError} onClose={() => setTimelineDialogOpen(false)} onSave={() => void saveTimelineEvent()} />
+      <WorldAssetDialog open={worldAssetDialogOpen} editing={worldAssetEditingId !== null} editingId={worldAssetEditingId} draft={worldAssetDraft} setDraft={setWorldAssetDraft} chapters={chapters} assets={worldAssets} saving={savingWorldAsset} error={worldAssetDialogError} onClose={() => setWorldAssetDialogOpen(false)} onSave={() => void saveWorldAsset()} />
     </div>
   )
 }

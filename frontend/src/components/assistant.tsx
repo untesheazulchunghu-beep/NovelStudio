@@ -2,8 +2,9 @@ import { writingModeLabel, writingModes } from '../lib/agent'
 import { maxAgentInputCharacters, maxAgentSelectionCharacters } from '../lib/constants'
 import { formatNumber, relativeTime, statusClass } from '../lib/format'
 import { countUnicodeCharacters, isIMEComposing } from '../lib/text'
-import { Archive, Bot, BrainCircuit, Check, ChevronRight, Command, FileText, Lightbulb, ListTodo, Pencil, Plus, Search, Send, Sparkles, Target, X } from 'lucide-react'
-import type { Chapter, Character, ChatMessage, Note, WorkspaceResponse } from '../types'
+import { Archive, Bot, BrainCircuit, Check, ChevronRight, Circle, Command, FileText, Lightbulb, ListTodo, Pencil, Plus, Search, Send, Sparkles, Target, X } from 'lucide-react'
+import type { Chapter, Character, ChatMessage, Note, TimelineEvent, WorldAsset, WorkspaceResponse } from '../types'
+import type { ContextKind } from '../hooks/useAgentContextSelection'
 import type { ChatApplyTarget, WritingMode } from '../workbenchTypes'
 
 export function ChatPanel({ chat, input, setInput, send, cancel, retryPrompt, retryNeedsReconcile, retryNeedsReview, checkChatRecovery, checkingChatRecovery, retryAfterReview, sending, cancelling, hasUnread, onJumpToLatest, onChatScroll, chatScrollRef, locked, settingsUnsaved, hasChapter, suggestions, mode, setMode, chatEndRef, hidden, selectionCharacterCount, selectionHasText, clearSelection, applyTarget, onPreviewRewrite }: { chat: ChatMessage[]; input: string; setInput: (value: string) => void; send: (preset?: string) => void; cancel: () => void; retryPrompt?: string; retryNeedsReconcile: boolean; retryNeedsReview: boolean; checkChatRecovery: () => void; checkingChatRecovery: boolean; retryAfterReview: () => void; sending: boolean; cancelling: boolean; hasUnread: boolean; onJumpToLatest: () => void; onChatScroll: () => void; chatScrollRef: React.RefObject<HTMLDivElement | null>; locked: boolean; settingsUnsaved: boolean; hasChapter: boolean; suggestions: string[]; mode: WritingMode; setMode: (mode: WritingMode) => void; chatEndRef: React.RefObject<HTMLDivElement | null>; hidden: boolean; selectionCharacterCount: number; selectionHasText: boolean; clearSelection: () => void; applyTarget: ChatApplyTarget | null; onPreviewRewrite: (target: ChatApplyTarget) => void }) {
@@ -38,6 +39,86 @@ export function OutlinePanel({ chapters, activeChapterId, setActiveChapterId, on
   return <div className="outline-panel" role="tabpanel" id="assistant-panel-outline" aria-labelledby="assistant-tab-outline" tabIndex={0} hidden={hidden} style={hidden ? { display: 'none' } : undefined}><div className="panel-intro"><div className="panel-intro-icon"><ListTodo size={16} /></div><div><strong>章节路线</strong><p>把每章的变化写清楚，正文会更轻松。</p></div></div><div className="outline-list">{chapters.map((chapter) => <button key={chapter.id} className={`outline-item ${activeChapterId === chapter.id ? 'active' : ''}`} onClick={() => setActiveChapterId(chapter.id)} disabled={busy}><span className={`outline-marker ${statusClass(chapter.status)}`} /> <span className="outline-number">{String(chapter.number).padStart(2, '0')}</span><span className="outline-title"><strong>{chapter.title}</strong><small>{chapter.summary || '还没有章节摘要'}</small></span><ChevronRight size={14} /></button>)}</div><button className="outline-add" onClick={onCreate} disabled={busy}><Plus size={14} /> 添加章节</button></div>
 }
 
-export function ContextPanel({ characters, notes, project, projectBusy, onEditProject, onEditCharacter, onEditNote, hidden }: { characters: Character[]; notes: Note[]; project?: WorkspaceResponse['workspace']['project']; projectBusy: boolean; onEditProject: () => void; onEditCharacter: (character: Character) => void; onEditNote: (note: Note) => void; hidden: boolean }) {
-  return <div className="context-panel" role="tabpanel" id="assistant-panel-context" aria-labelledby="assistant-tab-context" tabIndex={0} hidden={hidden} style={hidden ? { display: 'none' } : undefined}><div className="context-card"><div className="context-card-header"><span><Archive size={14} /> 项目设定</span><button className="subtle-icon" onClick={onEditProject} title="编辑项目资料" aria-label="编辑项目资料" disabled={!project || projectBusy}><Pencil size={13} /></button></div><p>{project?.premise ?? '加载项目设定…'}</p><div className="context-tags"><span>{project?.genre}</span><span>当前项目</span></div></div><div className="context-section"><div className="context-section-title"><span>角色</span><span>{characters.length}</span></div>{characters.map((character) => <button className="context-character" key={character.id} onClick={() => onEditCharacter(character)} aria-label={`编辑角色 ${character.name}`} disabled={projectBusy}><span className="character-dot" style={{ background: character.color }} /> <div><strong>{character.name}</strong><small>{character.role}</small></div></button>)}</div><div className="context-section"><div className="context-section-title"><span>已固定便笺</span><span>{notes.length}</span></div>{notes.map((note) => <button className="context-note" key={note.id} onClick={() => onEditNote(note)} aria-label={`编辑便笺 ${note.title}`} disabled={projectBusy}><Lightbulb size={13} /><span>{note.title}</span></button>)}</div><div className="context-footnote"><BrainCircuit size={13} /> 这些内容会随每次对话自动带入</div></div>
+export function ContextPanel({
+  characters,
+  notes,
+  timeline,
+  worldAssets,
+  selectedContextSets,
+  onToggleContextItem,
+  onSetAllContextItems,
+  project,
+  projectBusy,
+  onEditProject,
+  onEditCharacter,
+  onEditNote,
+  hidden,
+}: {
+  characters: Character[]
+  notes: Note[]
+  timeline: TimelineEvent[]
+  worldAssets: WorldAsset[]
+  selectedContextSets: { character_ids: Set<number>; note_ids: Set<number>; timeline_event_ids: Set<number>; world_asset_ids: Set<number> }
+  onToggleContextItem: (kind: ContextKind, id: number) => void
+  onSetAllContextItems: (kind: ContextKind, enabled: boolean) => void
+  project?: WorkspaceResponse['workspace']['project']
+  projectBusy: boolean
+  onEditProject: () => void
+  onEditCharacter: (character: Character) => void
+  onEditNote: (note: Note) => void
+  hidden: boolean
+}) {
+  const selectedCount = characters.filter((item) => selectedContextSets.character_ids.has(item.id)).length
+    + notes.filter((item) => selectedContextSets.note_ids.has(item.id)).length
+    + timeline.filter((item) => selectedContextSets.timeline_event_ids.has(item.id)).length
+    + worldAssets.filter((item) => selectedContextSets.world_asset_ids.has(item.id)).length
+  const renderControls = (kind: ContextKind, count: number) => (
+    <span className="context-selection-actions">
+      <button type="button" onClick={() => onSetAllContextItems(kind, true)} disabled={projectBusy || count === 0}>全选</button>
+      <button type="button" onClick={() => onSetAllContextItems(kind, false)} disabled={projectBusy || count === 0}>清空</button>
+    </span>
+  )
+  return (
+    <div className="context-panel" role="tabpanel" id="assistant-panel-context" aria-labelledby="assistant-tab-context" tabIndex={0} hidden={hidden} style={hidden ? { display: 'none' } : undefined}>
+      <div className="context-card">
+        <div className="context-card-header"><span><Archive size={14} /> 项目设定</span><button className="subtle-icon" onClick={onEditProject} title="编辑项目资料" aria-label="编辑项目资料" disabled={!project || projectBusy}><Pencil size={13} /></button></div>
+        <p>{project?.premise ?? '加载项目设定…'}</p>
+        <div className="context-tags"><span>{project?.genre}</span><span>始终带入</span></div>
+      </div>
+      <div className="context-selection-summary"><BrainCircuit size={13} /><span>已选择 {selectedCount} 项资料；项目设定和当前章节始终可用。</span></div>
+      <div className="context-section">
+        <div className="context-section-title"><span>角色</span><span>{characters.length}{renderControls('character_ids', characters.length)}</span></div>
+        {characters.map((character) => (
+          <div className="context-select-row" key={character.id}>
+            <label><input type="checkbox" checked={selectedContextSets.character_ids.has(character.id)} onChange={() => onToggleContextItem('character_ids', character.id)} disabled={projectBusy} /><span className="character-dot" style={{ background: character.color }} /><span><strong>{character.name}</strong><small>{character.role}</small></span></label>
+            <button className="subtle-icon" onClick={() => onEditCharacter(character)} aria-label={'编辑角色 ' + character.name} disabled={projectBusy}><Pencil size={12} /></button>
+          </div>
+        ))}
+        {characters.length === 0 && <div className="context-empty">还没有角色档案。</div>}
+      </div>
+      <div className="context-section">
+        <div className="context-section-title"><span>世界观资料</span><span>{worldAssets.length}{renderControls('world_asset_ids', worldAssets.length)}</span></div>
+        {worldAssets.map((asset) => <label className="context-select-row timeline-context-row" key={asset.id}><span><input type="checkbox" checked={selectedContextSets.world_asset_ids.has(asset.id)} onChange={() => onToggleContextItem('world_asset_ids', asset.id)} disabled={projectBusy} /><Circle size={10} /><span><strong>{asset.name}</strong><small>{asset.kind}{asset.description ? ` · ${asset.description}` : ''}</small></span></span></label>)}
+        {worldAssets.length === 0 && <div className="context-empty">还没有世界观资料。</div>}
+      </div>
+      <div className="context-section">
+        <div className="context-section-title"><span>便笺</span><span>{notes.length}{renderControls('note_ids', notes.length)}</span></div>
+        {notes.map((note) => (
+          <div className="context-select-row" key={note.id}>
+            <label><input type="checkbox" checked={selectedContextSets.note_ids.has(note.id)} onChange={() => onToggleContextItem('note_ids', note.id)} disabled={projectBusy} /><Lightbulb size={13} /><span><strong>{note.title}</strong><small>{note.kind}</small></span></label>
+            <button className="subtle-icon" onClick={() => onEditNote(note)} aria-label={'编辑便笺 ' + note.title} disabled={projectBusy}><Pencil size={12} /></button>
+          </div>
+        ))}
+        {notes.length === 0 && <div className="context-empty">还没有便笺。</div>}
+      </div>
+      <div className="context-section">
+        <div className="context-section-title"><span>故事时间线</span><span>{timeline.length}{renderControls('timeline_event_ids', timeline.length)}</span></div>
+        {timeline.map((event) => (
+          <label className="context-select-row timeline-context-row" key={event.id}><span><input type="checkbox" checked={selectedContextSets.timeline_event_ids.has(event.id)} onChange={() => onToggleContextItem('timeline_event_ids', event.id)} disabled={projectBusy} /><Circle size={10} /><span><strong>{event.title}</strong><small>{event.time_label || event.status}</small></span></span></label>
+        ))}
+        {timeline.length === 0 && <div className="context-empty">还没有时间线事件。</div>}
+      </div>
+      <div className="context-footnote"><BrainCircuit size={13} /> 勾选的资料会随下次 Agent 对话带入；未勾选内容仍保留在项目中。</div>
+    </div>
+  )
 }

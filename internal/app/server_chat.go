@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -245,18 +246,20 @@ func writeChatStreamError(w http.ResponseWriter, err error) {
 }
 
 func fingerprintChatRequest(input ChatRequest) (string, error) {
+	contextItems := canonicalChatContextItems(input.ContextItems)
 	payload := struct {
-		Message        string  `json:"message"`
-		Mode           string  `json:"mode"`
-		ChapterID      int64   `json:"chapter_id"`
-		ChapterTitle   *string `json:"chapter_title,omitempty"`
-		ChapterSummary *string `json:"chapter_summary,omitempty"`
-		Context        string  `json:"context"`
-		Selection      string  `json:"selection,omitempty"`
+		Message        string            `json:"message"`
+		Mode           string            `json:"mode"`
+		ChapterID      int64             `json:"chapter_id"`
+		ChapterTitle   *string           `json:"chapter_title,omitempty"`
+		ChapterSummary *string           `json:"chapter_summary,omitempty"`
+		Context        string            `json:"context"`
+		Selection      string            `json:"selection,omitempty"`
+		ContextItems   *ChatContextItems `json:"context_items,omitempty"`
 	}{
 		Message: input.Message, Mode: input.Mode, ChapterID: input.ChapterID,
 		ChapterTitle: input.ChapterTitle, ChapterSummary: input.ChapterSummary,
-		Context: input.Context, Selection: input.Selection,
+		Context: input.Context, Selection: input.Selection, ContextItems: contextItems,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -264,6 +267,37 @@ func fingerprintChatRequest(input ChatRequest) (string, error) {
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func canonicalChatContextItems(items *ChatContextItems) *ChatContextItems {
+	if items == nil {
+		return nil
+	}
+	canonical := &ChatContextItems{
+		CharacterIDs:     append([]int64{}, items.CharacterIDs...),
+		NoteIDs:          append([]int64{}, items.NoteIDs...),
+		TimelineEventIDs: append([]int64{}, items.TimelineEventIDs...),
+		WorldAssetIDs:    append([]int64{}, items.WorldAssetIDs...),
+	}
+	for _, ids := range [][]int64{canonical.CharacterIDs, canonical.NoteIDs, canonical.TimelineEventIDs, canonical.WorldAssetIDs} {
+		sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	}
+	canonical.CharacterIDs = uniquePositiveIDs(canonical.CharacterIDs)
+	canonical.NoteIDs = uniquePositiveIDs(canonical.NoteIDs)
+	canonical.TimelineEventIDs = uniquePositiveIDs(canonical.TimelineEventIDs)
+	canonical.WorldAssetIDs = uniquePositiveIDs(canonical.WorldAssetIDs)
+	return canonical
+}
+
+func uniquePositiveIDs(ids []int64) []int64 {
+	unique := ids[:0]
+	for _, id := range ids {
+		if id <= 0 || (len(unique) > 0 && unique[len(unique)-1] == id) {
+			continue
+		}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func chatProviderLabel(settings Settings) string {

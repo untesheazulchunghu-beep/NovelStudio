@@ -66,6 +66,16 @@ func maxID(workspace Workspace) int64 {
 			max = note.ID
 		}
 	}
+	for _, event := range workspace.Timeline {
+		if event.ID > max {
+			max = event.ID
+		}
+	}
+	for _, asset := range workspace.WorldAssets {
+		if asset.ID > max {
+			max = asset.ID
+		}
+	}
 	for _, message := range workspace.Chat {
 		if message.ID > max {
 			max = message.ID
@@ -153,8 +163,20 @@ func cloneWorkspace(input Workspace) Workspace {
 		output.Characters[index] = characterCopy(character)
 	}
 	output.Notes = append([]Note{}, input.Notes...)
+	output.Timeline = append([]TimelineEvent{}, input.Timeline...)
+	output.WorldAssets = cloneWorldAssets(input.WorldAssets)
 	output.Chat = append([]ChatMessage{}, input.Chat...)
 	output.Settings = input.Settings
+	return output
+}
+
+func cloneWorldAssets(input []WorldAsset) []WorldAsset {
+	output := make([]WorldAsset, len(input))
+	for index, asset := range input {
+		output[index] = asset
+		output[index].ChapterIDs = append([]int64{}, asset.ChapterIDs...)
+		output[index].RelatedAssetIDs = append([]int64{}, asset.RelatedAssetIDs...)
+	}
 	return output
 }
 

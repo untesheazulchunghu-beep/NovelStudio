@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -23,9 +24,33 @@ func TestImportProjectBackupAcceptsValidBackup(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	backup := validBackupForImportTest()
-	backup.Chapters = []Chapter{{Title: "第一章", Summary: "目标", Content: "正文"}}
-	if _, err := store.ImportProjectBackup(backup); err != nil {
+	backup.Chapters = []Chapter{{ID: 41, Title: "第一章", Summary: "目标", Content: "正文"}}
+	backup.Timeline = []TimelineEvent{{Title: "确认线索", TimeLabel: "第三天", Description: "主角确认信件来源。", Status: "active", ChapterID: 41}}
+	imported, err := store.ImportProjectBackup(backup)
+	if err != nil {
 		t.Fatalf("import valid backup: %v", err)
+	}
+	workspace, exists := store.Snapshot(imported.WorkspaceID)
+	if !exists || len(workspace.Timeline) != 1 || workspace.Timeline[0].ChapterID != workspace.Chapters[0].ID {
+		t.Fatalf("imported timeline = %+v, chapters = %+v", workspace.Timeline, workspace.Chapters)
+	}
+}
+
+func TestProjectBackupSanitizesModelCredentials(t *testing.T) {
+	backup := projectBackupFor(Workspace{
+		Project:  Project{Title: "凭据清理"},
+		Settings: Settings{Provider: "compatible", BaseURL: "https://writer:secret@example.com/v1?token=abc&stream=true&api_key=xyz#private", APIKey: "sk-local-secret"},
+	})
+
+	if backup.Settings.BaseURL != "https://example.com/v1?stream=true" {
+		t.Fatalf("backup base URL = %q, want credentials removed", backup.Settings.BaseURL)
+	}
+	encoded, err := json.Marshal(backup)
+	if err != nil {
+		t.Fatalf("encode backup: %v", err)
+	}
+	if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "abc") || strings.Contains(string(encoded), "xyz") {
+		t.Fatalf("backup still contains model credentials: %s", encoded)
 	}
 }
 
@@ -60,6 +85,9 @@ func TestImportProjectBackupRejectsOversizedText(t *testing.T) {
 		},
 		"note body": func(backup *ProjectBackup) {
 			backup.Notes = []Note{{Title: "伏笔", Body: strings.Repeat("注", maxNoteBodyLength+1)}}
+		},
+		"timeline description": func(backup *ProjectBackup) {
+			backup.Timeline = []TimelineEvent{{Title: "事件", Description: strings.Repeat("时", maxTimelineDescriptionLength+1)}}
 		},
 	}
 

@@ -79,6 +79,46 @@ func migrateSQLite(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS timeline_events (
+			id INTEGER PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			time_label TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'planned',
+			chapter_id INTEGER,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+			FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE SET NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS timeline_events_workspace_order_idx ON timeline_events(workspace_id, id)`,
+		`CREATE TABLE IF NOT EXISTS world_assets (
+			id INTEGER PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'place',
+			description TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS world_assets_workspace_order_idx ON world_assets(workspace_id, id)`,
+		`CREATE TABLE IF NOT EXISTS world_asset_chapters (
+			asset_id INTEGER NOT NULL,
+			chapter_id INTEGER NOT NULL,
+			PRIMARY KEY(asset_id, chapter_id),
+			FOREIGN KEY(asset_id) REFERENCES world_assets(id) ON DELETE CASCADE,
+			FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS world_asset_links (
+			from_asset_id INTEGER NOT NULL,
+			to_asset_id INTEGER NOT NULL,
+			PRIMARY KEY(from_asset_id, to_asset_id),
+			CHECK(from_asset_id <> to_asset_id),
+			FOREIGN KEY(from_asset_id) REFERENCES world_assets(id) ON DELETE CASCADE,
+			FOREIGN KEY(to_asset_id) REFERENCES world_assets(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS world_asset_links_target_idx ON world_asset_links(to_asset_id)`,
 		`CREATE TABLE IF NOT EXISTS chat_messages (
 			id INTEGER PRIMARY KEY,
 			workspace_id TEXT NOT NULL,

@@ -1,0 +1,38 @@
+.world-assets-view { padding: 22px 24px 32px; overflow: auto; height: 100%; }
+.world-assets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin: 18px 0; }
+.world-asset-card { border: 1px solid var(--line-soft); border-radius: 12px; padding: 14px; background: var(--panel-raised); min-height: 150px; }
+.world-asset-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.world-asset-heading strong { display: block; margin-top: 4px; font-size: 15px; }
+.world-asset-kind { display: inline-block; color: var(--accent); font-size: 11px; letter-spacing: .04em; }
+.world-asset-card p { margin: 12px 0 8px; line-height: 1.55; color: var(--muted); }
+.world-asset-details { white-space: pre-wrap; color: var(--muted-2); font-size: 12px; line-height: 1.5; }
+.world-asset-links { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+.world-asset-links span, .world-asset-links button { border: 0; border-radius: 999px; padding: 3px 7px; background: var(--panel-hover); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.world-asset-links button:hover:not(:disabled) { color: var(--accent-strong); background: var(--accent-dim); }
+.world-asset-dialog { max-height: min(760px, calc(100vh - 40px)); overflow: auto; }
+.world-asset-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.world-asset-checks fieldset { min-width: 0; border: 1px solid var(--line-soft); border-radius: 10px; padding: 9px; max-height: 150px; overflow: auto; }
+.world-asset-checks legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+.world-asset-checks label { display: block; margin: 7px 0; font-size: 12px; }
+.world-asset-checks input { margin-right: 7px; }
+.world-asset-view-toggle { display: flex; gap: 4px; margin-left: auto; }
+.world-asset-view-toggle button { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-soft); border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; }
+.world-asset-view-toggle button:hover, .world-asset-view-toggle button.active { color: var(--accent-strong); background: var(--accent-dim); }
+.world-asset-relations { display: flex; flex-direction: column; gap: 8px; margin: 18px 0; }
+.world-asset-relations-heading { display: flex; justify-content: space-between; align-items: center; color: var(--text); }
+.world-asset-relations-heading span { color: var(--muted); font-size: 11px; }
+.world-asset-relation-row { display: grid; grid-template-columns: minmax(160px, .7fr) auto minmax(240px, 1.8fr) auto; gap: 10px; align-items: center; border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px; background: var(--panel-raised); }
+.world-asset-relation-node { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.world-asset-relation-node strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.world-asset-relation-node small { color: var(--muted-2); font-size: 10px; }
+.world-asset-relation-arrow { color: var(--accent); }
+.world-asset-relation-targets { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.world-asset-relation-targets > div { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.world-asset-relation-label { width: 48px; color: var(--muted-2); font-size: 10px; }
+.world-asset-relation-chip { border: 0; border-radius: 999px; padding: 3px 7px; color: var(--accent-strong); background: var(--accent-dim); font: inherit; font-size: 11px; cursor: pointer; }
+.world-asset-relation-chip.muted { color: var(--muted); background: var(--panel-hover); }
+.world-asset-relation-chip:hover:not(:disabled) { color: var(--text); background: var(--accent-dim); }
+.world-asset-relation-empty { color: var(--muted-2); font-size: 11px; }
+.world-asset-relation-edit { white-space: nowrap; }
+@media (max-width: 720px) { .world-asset-checks { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .world-asset-relation-row { grid-template-columns: 1fr auto; } .world-asset-relation-targets { grid-column: 1 / -1; } .world-asset-relation-edit { grid-column: 2; grid-row: 1; } }

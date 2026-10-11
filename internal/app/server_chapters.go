@@ -290,7 +290,7 @@ func (s *Server) handleChapterGenerate(w http.ResponseWriter, r *http.Request, w
 	if request.Context != nil {
 		currentText = *request.Context
 	}
-	prompt := buildChapterGeneratePrompt(workspace, chapter, instruction, currentText)
+	prompt := buildChapterGeneratePrompt(workspace, chapter, instruction, currentText, request.ContextItems)
 	localContext := localReplyContextFor(workspace, chapter, "write", instruction, currentText)
 	localContext.chapterGeneration = true
 	reply, provider, err := s.generate(r.Context(), prompt, workspace.Settings, localContext)

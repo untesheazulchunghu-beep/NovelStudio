@@ -140,6 +140,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case "notes":
 		s.handleNotes(w, r, parts, requestWorkspaceID(r))
 		return
+	case "timeline":
+		s.handleTimeline(w, r, parts, requestWorkspaceID(r))
+		return
+	case "world-assets":
+		s.handleWorldAssets(w, r, parts, requestWorkspaceID(r))
+		return
 	case "chat":
 		if r.Method == http.MethodPost && len(parts) == 1 {
 			s.handleChat(w, r, requestWorkspaceID(r))

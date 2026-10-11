@@ -88,6 +88,27 @@ type Note struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type TimelineEvent struct {
+	ID          int64  `json:"id"`
+	Title       string `json:"title"`
+	TimeLabel   string `json:"time_label"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	ChapterID   int64  `json:"chapter_id,omitempty"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+type WorldAsset struct {
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	Kind            string  `json:"kind"`
+	Description     string  `json:"description"`
+	Details         string  `json:"details"`
+	ChapterIDs      []int64 `json:"chapter_ids,omitempty"`
+	RelatedAssetIDs []int64 `json:"related_asset_ids,omitempty"`
+	UpdatedAt       string  `json:"updated_at"`
+}
+
 type ChatMessage struct {
 	ID                 int64  `json:"id"`
 	Role               string `json:"role"`
@@ -125,25 +146,29 @@ type SettingsView struct {
 }
 
 type Workspace struct {
-	ID         string        `json:"workspace_id"`
-	Project    Project       `json:"project"`
-	Chapters   []Chapter     `json:"chapters"`
-	Characters []Character   `json:"characters"`
-	Notes      []Note        `json:"notes"`
-	Chat       []ChatMessage `json:"chat"`
-	Settings   Settings      `json:"settings"`
-	UpdatedAt  string        `json:"updated_at"`
+	ID          string          `json:"workspace_id"`
+	Project     Project         `json:"project"`
+	Chapters    []Chapter       `json:"chapters"`
+	Characters  []Character     `json:"characters"`
+	Notes       []Note          `json:"notes"`
+	Timeline    []TimelineEvent `json:"timeline"`
+	WorldAssets []WorldAsset    `json:"world_assets"`
+	Chat        []ChatMessage   `json:"chat"`
+	Settings    Settings        `json:"settings"`
+	UpdatedAt   string          `json:"updated_at"`
 }
 
 type WorkspaceView struct {
-	ID         string           `json:"workspace_id"`
-	Project    Project          `json:"project"`
-	Chapters   []ChapterSummary `json:"chapters"`
-	Characters []Character      `json:"characters"`
-	Notes      []Note           `json:"notes"`
-	Chat       []ChatMessage    `json:"chat"`
-	Settings   SettingsView     `json:"settings"`
-	UpdatedAt  string           `json:"updated_at"`
+	ID          string           `json:"workspace_id"`
+	Project     Project          `json:"project"`
+	Chapters    []ChapterSummary `json:"chapters"`
+	Characters  []Character      `json:"characters"`
+	Notes       []Note           `json:"notes"`
+	Timeline    []TimelineEvent  `json:"timeline"`
+	WorldAssets []WorldAsset     `json:"world_assets"`
+	Chat        []ChatMessage    `json:"chat"`
+	Settings    SettingsView     `json:"settings"`
+	UpdatedAt   string           `json:"updated_at"`
 }
 
 type ChapterSummary struct {
@@ -178,6 +203,8 @@ type ProjectBackup struct {
 	ChapterRevisions []ChapterRevision     `json:"chapter_revisions,omitempty"`
 	Characters       []Character           `json:"characters"`
 	Notes            []Note                `json:"notes"`
+	Timeline         []TimelineEvent       `json:"timeline,omitempty"`
+	WorldAssets      []WorldAsset          `json:"world_assets,omitempty"`
 	Chat             []ChatMessage         `json:"chat"`
 	Settings         ProjectBackupSettings `json:"settings"`
 }
@@ -198,21 +225,34 @@ type Stats struct {
 }
 
 type ChatRequest struct {
-	RequestID      string  `json:"request_id,omitempty"`
-	Message        string  `json:"message"`
-	Mode           string  `json:"mode"`
-	ChapterID      int64   `json:"chapter_id"`
-	ChapterTitle   *string `json:"chapter_title,omitempty"`
-	ChapterSummary *string `json:"chapter_summary,omitempty"`
-	Context        string  `json:"context"`
-	Selection      string  `json:"selection,omitempty"`
+	RequestID      string            `json:"request_id,omitempty"`
+	Message        string            `json:"message"`
+	Mode           string            `json:"mode"`
+	ChapterID      int64             `json:"chapter_id"`
+	ChapterTitle   *string           `json:"chapter_title,omitempty"`
+	ChapterSummary *string           `json:"chapter_summary,omitempty"`
+	Context        string            `json:"context"`
+	Selection      string            `json:"selection,omitempty"`
+	ContextItems   *ChatContextItems `json:"context_items,omitempty"`
+}
+
+// ChatContextItems identifies the project materials an author explicitly
+// wants to include in an Agent request. A nil value preserves the legacy
+// behavior for older clients; an allocated value with empty lists means that
+// no optional project materials should be included.
+type ChatContextItems struct {
+	CharacterIDs     []int64 `json:"character_ids,omitempty"`
+	NoteIDs          []int64 `json:"note_ids,omitempty"`
+	TimelineEventIDs []int64 `json:"timeline_event_ids,omitempty"`
+	WorldAssetIDs    []int64 `json:"world_asset_ids,omitempty"`
 }
 
 type ChapterGenerateRequest struct {
-	Instruction    string  `json:"instruction"`
-	ChapterTitle   *string `json:"chapter_title,omitempty"`
-	ChapterSummary *string `json:"chapter_summary,omitempty"`
-	Context        *string `json:"context"`
+	Instruction    string            `json:"instruction"`
+	ChapterTitle   *string           `json:"chapter_title,omitempty"`
+	ChapterSummary *string           `json:"chapter_summary,omitempty"`
+	Context        *string           `json:"context"`
+	ContextItems   *ChatContextItems `json:"context_items,omitempty"`
 }
 
 type ChatResponse struct {
@@ -245,6 +285,23 @@ type NoteInput struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	Kind  string `json:"kind"`
+}
+
+type TimelineEventInput struct {
+	Title       string `json:"title"`
+	TimeLabel   string `json:"time_label"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	ChapterID   int64  `json:"chapter_id"`
+}
+
+type WorldAssetInput struct {
+	Name            string  `json:"name"`
+	Kind            string  `json:"kind"`
+	Description     string  `json:"description"`
+	Details         string  `json:"details"`
+	ChapterIDs      []int64 `json:"chapter_ids"`
+	RelatedAssetIDs []int64 `json:"related_asset_ids"`
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

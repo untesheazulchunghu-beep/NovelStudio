@@ -34,38 +34,20 @@ interface WorkbenchEffectsOptions {
   chat: ChatMessage[]
   chatEndRef: MutableRef<HTMLDivElement | null>
   sending: boolean
-  editorLocked: boolean
-  saveChapterRef: MutableRef<() => Promise<boolean>>
   helpDialogOpen: boolean
   projectDialogOpen: boolean
   projectEditDialogOpen: boolean
   projectDeleteDialogOpen: boolean
   characterDialogOpen: boolean
   noteDialogOpen: boolean
+  timelineDialogOpen: boolean
+  worldAssetDialogOpen: boolean
   rewritePreviewOpen: boolean
   revisionDialogOpen: boolean
   searchOpen: boolean
-  chapterActionBusy: boolean
-  deletingProject: boolean
-  savingProject: boolean
-  creatingProject: boolean
-  savingContextItem: boolean
-  agentRequestRef: MutableRef<AbortController | null>
-  setCancellingRequest: Dispatch<SetStateAction<boolean>>
-  setSearchQuery: Dispatch<SetStateAction<string>>
-  setSelectedSearchIndex: Dispatch<SetStateAction<number>>
-  setSearchOpen: Dispatch<SetStateAction<boolean>>
   lastOutsideModalFocusRef: MutableRef<HTMLElement | null>
   modalWasOpenRef: MutableRef<boolean>
   modalOpen: boolean
-  setRewritePreviewOpen: Dispatch<SetStateAction<boolean>>
-  setRevisionDialogOpen: Dispatch<SetStateAction<boolean>>
-  setHelpDialogOpen: Dispatch<SetStateAction<boolean>>
-  setProjectDeleteDialogOpen: Dispatch<SetStateAction<boolean>>
-  setProjectEditDialogOpen: Dispatch<SetStateAction<boolean>>
-  setProjectDialogOpen: Dispatch<SetStateAction<boolean>>
-  setCharacterDialogOpen: Dispatch<SetStateAction<boolean>>
-  setNoteDialogOpen: Dispatch<SetStateAction<boolean>>
 }
 
 export function useWorkbenchEffects(options: WorkbenchEffectsOptions) {
@@ -96,38 +78,20 @@ export function useWorkbenchEffects(options: WorkbenchEffectsOptions) {
     chat,
     chatEndRef,
     sending,
-    editorLocked,
-    saveChapterRef,
     helpDialogOpen,
     projectDialogOpen,
     projectEditDialogOpen,
     projectDeleteDialogOpen,
     characterDialogOpen,
     noteDialogOpen,
+    timelineDialogOpen,
+    worldAssetDialogOpen,
     rewritePreviewOpen,
     revisionDialogOpen,
     searchOpen,
-    chapterActionBusy,
-    deletingProject,
-    savingProject,
-    creatingProject,
-    savingContextItem,
-    agentRequestRef,
-    setCancellingRequest,
-    setSearchQuery,
-    setSelectedSearchIndex,
-    setSearchOpen,
     lastOutsideModalFocusRef,
     modalWasOpenRef,
     modalOpen,
-    setRewritePreviewOpen,
-    setRevisionDialogOpen,
-    setHelpDialogOpen,
-    setProjectDeleteDialogOpen,
-    setProjectEditDialogOpen,
-    setProjectDialogOpen,
-    setCharacterDialogOpen,
-    setNoteDialogOpen,
   } = options
 
   useLayoutEffect(() => {
@@ -187,65 +151,6 @@ export function useWorkbenchEffects(options: WorkbenchEffectsOptions) {
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     chatEndRef.current?.scrollIntoView({ behavior })
   }, [assistantCollapsed, assistantTab, chat.length, sending])
-
-  useEffect(() => {
-    const handleGlobalShortcuts = (event: KeyboardEvent) => {
-      if (isIMEComposing(event)) return
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-        const target = event.target
-        if (!(target instanceof HTMLElement) || !target.closest('.editor-pane') || !data || !currentChapter) return
-        event.preventDefault()
-        if (!editorLocked) void saveChapterRef.current()
-        return
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        if (helpDialogOpen || projectDialogOpen || projectEditDialogOpen || projectDeleteDialogOpen || characterDialogOpen || noteDialogOpen || rewritePreviewOpen || revisionDialogOpen) {
-          event.preventDefault()
-          return
-        }
-        if (!data) return
-        event.preventDefault()
-        setSearchQuery('')
-        setSelectedSearchIndex(0)
-        setSearchOpen(true)
-      } else if (event.key === 'Escape') {
-        if (rewritePreviewOpen) {
-          event.preventDefault()
-          setRewritePreviewOpen(false)
-        } else if (revisionDialogOpen) {
-          event.preventDefault()
-          if (!chapterActionBusy) setRevisionDialogOpen(false)
-        } else if (searchOpen) {
-          event.preventDefault()
-          setSearchOpen(false)
-        } else if (helpDialogOpen) {
-          event.preventDefault()
-          setHelpDialogOpen(false)
-        } else if (projectDeleteDialogOpen) {
-          event.preventDefault()
-          if (!deletingProject) setProjectDeleteDialogOpen(false)
-        } else if (projectEditDialogOpen) {
-          event.preventDefault()
-          if (!savingProject) setProjectEditDialogOpen(false)
-        } else if (projectDialogOpen) {
-          event.preventDefault()
-          if (!creatingProject) setProjectDialogOpen(false)
-        } else if (characterDialogOpen || noteDialogOpen) {
-          event.preventDefault()
-          if (!savingContextItem) {
-            setCharacterDialogOpen(false)
-            setNoteDialogOpen(false)
-          }
-        } else if (agentRequestRef.current) {
-          event.preventDefault()
-          setCancellingRequest(true)
-          agentRequestRef.current.abort()
-        }
-      }
-    }
-    window.addEventListener('keydown', handleGlobalShortcuts)
-    return () => window.removeEventListener('keydown', handleGlobalShortcuts)
-  }, [chapterActionBusy, characterDialogOpen, creatingProject, currentChapter?.id, data, deletingProject, editorLocked, helpDialogOpen, noteDialogOpen, projectDeleteDialogOpen, projectDialogOpen, projectEditDialogOpen, revisionDialogOpen, rewritePreviewOpen, savingContextItem, savingProject, searchOpen])
 
   useEffect(() => {
     const rememberOutsideModalFocus = (event: FocusEvent) => {
@@ -312,7 +217,7 @@ export function useWorkbenchEffects(options: WorkbenchEffectsOptions) {
     }
     document.addEventListener('keydown', handleModalTab)
     return () => document.removeEventListener('keydown', handleModalTab)
-  }, [characterDialogOpen, helpDialogOpen, modalOpen, noteDialogOpen, projectDeleteDialogOpen, projectDialogOpen, projectEditDialogOpen, rewritePreviewOpen, searchOpen])
+  }, [characterDialogOpen, helpDialogOpen, modalOpen, noteDialogOpen, projectDeleteDialogOpen, projectDialogOpen, projectEditDialogOpen, rewritePreviewOpen, searchOpen, timelineDialogOpen])
 
 
 }

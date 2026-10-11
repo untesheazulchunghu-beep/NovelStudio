@@ -22,14 +22,16 @@ func projectBackupFor(workspace Workspace) ProjectBackup {
 		chat[index].RequestID = ""
 	}
 	return ProjectBackup{
-		Format:     projectBackupFormat,
-		Version:    projectBackupVersion,
-		ExportedAt: now(),
-		Project:    workspace.Project,
-		Chapters:   append([]Chapter{}, workspace.Chapters...),
-		Characters: append([]Character{}, workspace.Characters...),
-		Notes:      append([]Note{}, workspace.Notes...),
-		Chat:       chat,
+		Format:      projectBackupFormat,
+		Version:     projectBackupVersion,
+		ExportedAt:  now(),
+		Project:     workspace.Project,
+		Chapters:    append([]Chapter{}, workspace.Chapters...),
+		Characters:  append([]Character{}, workspace.Characters...),
+		Notes:       append([]Note{}, workspace.Notes...),
+		Timeline:    append([]TimelineEvent{}, workspace.Timeline...),
+		WorldAssets: cloneWorldAssets(workspace.WorldAssets),
+		Chat:        chat,
 		Settings: ProjectBackupSettings{
 			Provider: settings.Provider, BaseURL: sanitizeBackupBaseURL(settings.BaseURL),
 			Model: settings.Model, Temperature: settings.Temperature,
@@ -129,7 +131,7 @@ func (s *Store) ImportProjectBackup(backup ProjectBackup) (ProjectSummary, error
 	if err := validateProjectTextFields(ProjectInput{Title: projectTitle, Subtitle: backup.Project.Subtitle, Genre: backup.Project.Genre, Premise: backup.Project.Premise}); err != nil {
 		return ProjectSummary{}, invalidProjectBackup(err.Error())
 	}
-	if len(backup.Chapters) > maxProjectBackupEntries || len(backup.ChapterRevisions) > maxProjectBackupEntries*maxChapterRevisions || len(backup.Characters) > maxProjectBackupEntries || len(backup.Notes) > maxProjectBackupEntries || len(backup.Chat) > maxProjectBackupEntries {
+	if len(backup.Chapters) > maxProjectBackupEntries || len(backup.ChapterRevisions) > maxProjectBackupEntries*maxChapterRevisions || len(backup.Characters) > maxProjectBackupEntries || len(backup.Notes) > maxProjectBackupEntries || len(backup.Timeline) > maxProjectBackupEntries || len(backup.WorldAssets) > maxProjectBackupEntries || len(backup.Chat) > maxProjectBackupEntries {
 		return ProjectSummary{}, invalidProjectBackup("备份中的项目条目过多")
 	}
 	for _, chapter := range backup.Chapters {
@@ -150,6 +152,28 @@ func (s *Store) ImportProjectBackup(backup ProjectBackup) (ProjectSummary, error
 			return ProjectSummary{}, invalidProjectBackup("便笺标题不能为空")
 		}
 		if err := validateNoteTextFields(note.Title, note.Body); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
+	}
+	for _, event := range backup.Timeline {
+		if strings.TrimSpace(event.Title) == "" {
+			return ProjectSummary{}, invalidProjectBackup("时间线事件标题不能为空")
+		}
+		if err := validateTimelineEventTextFields(TimelineEventInput{Title: event.Title, TimeLabel: event.TimeLabel, Description: event.Description}); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
+		if _, err := normalizeTimelineEventStatus(event.Status); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
+	}
+	for _, asset := range backup.WorldAssets {
+		if strings.TrimSpace(asset.Name) == "" {
+			return ProjectSummary{}, invalidProjectBackup("world asset name is required")
+		}
+		if err := validateWorldAssetTextFields(WorldAssetInput{Name: asset.Name, Kind: asset.Kind, Description: asset.Description, Details: asset.Details}); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
+		if _, err := normalizeWorldAssetKind(asset.Kind); err != nil {
 			return ProjectSummary{}, invalidProjectBackup(err.Error())
 		}
 	}
@@ -295,6 +319,69 @@ func (s *Store) ImportProjectBackup(backup ProjectBackup) (ProjectSummary, error
 			notes[index].UpdatedAt = created
 		}
 	}
+	timeline := append([]TimelineEvent{}, backup.Timeline...)
+	for index := range timeline {
+		event := &timeline[index]
+		event.ID = entityID
+		entityID++
+		event.Title = strings.TrimSpace(event.Title)
+		event.TimeLabel = strings.TrimSpace(event.TimeLabel)
+		event.Status, _ = normalizeTimelineEventStatus(event.Status)
+		if event.ChapterID != 0 {
+			chapterID, exists := chapterIDMap[event.ChapterID]
+			if !exists {
+				return ProjectSummary{}, invalidProjectBackup("时间线事件引用了不存在的章节")
+			}
+			event.ChapterID = chapterID
+		}
+		if strings.TrimSpace(event.UpdatedAt) == "" {
+			event.UpdatedAt = created
+		}
+	}
+	worldAssets := cloneWorldAssets(backup.WorldAssets)
+	worldAssetIDMap := make(map[int64]int64, len(worldAssets))
+	for index := range worldAssets {
+		asset := &worldAssets[index]
+		oldID := asset.ID
+		if oldID != 0 {
+			if _, duplicate := worldAssetIDMap[oldID]; duplicate {
+				return ProjectSummary{}, invalidProjectBackup("world asset identifiers must be unique")
+			}
+			worldAssetIDMap[oldID] = entityID
+		}
+		asset.ID = entityID
+		entityID++
+		asset.Name = strings.TrimSpace(asset.Name)
+		asset.Kind, _ = normalizeWorldAssetKind(asset.Kind)
+		asset.Description = strings.TrimSpace(asset.Description)
+		asset.Details = strings.TrimSpace(asset.Details)
+		if strings.TrimSpace(asset.UpdatedAt) == "" {
+			asset.UpdatedAt = created
+		}
+		chapterIDs, err := remapBackupChapterIDs(asset.ChapterIDs, chapterIDMap)
+		if err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
+		asset.ChapterIDs = chapterIDs
+	}
+	for index := range worldAssets {
+		asset := &worldAssets[index]
+		related := make([]int64, 0, len(asset.RelatedAssetIDs))
+		seen := make(map[int64]struct{}, len(asset.RelatedAssetIDs))
+		for _, oldID := range asset.RelatedAssetIDs {
+			newID, exists := worldAssetIDMap[oldID]
+			if !exists || newID == asset.ID {
+				return ProjectSummary{}, invalidProjectBackup("world asset relation references an unknown or self asset")
+			}
+			if _, duplicate := seen[newID]; duplicate {
+				continue
+			}
+			seen[newID] = struct{}{}
+			related = append(related, newID)
+		}
+		sort.Slice(related, func(left, right int) bool { return related[left] < related[right] })
+		asset.RelatedAssetIDs = related
+	}
 	messages := append([]ChatMessage{}, chat...)
 	for index := range messages {
 		messages[index].ID = entityID
@@ -313,7 +400,7 @@ func (s *Store) ImportProjectBackup(backup ProjectBackup) (ProjectSummary, error
 	normalizeSettings(&settings)
 	workspace := Workspace{
 		ID: workspaceID, Project: project, Chapters: chapters, Characters: characters,
-		Notes: notes, Chat: messages, Settings: settings, UpdatedAt: created,
+		Notes: notes, Timeline: timeline, WorldAssets: worldAssets, Chat: messages, Settings: settings, UpdatedAt: created,
 	}
 	if err := persistWorkspaceWithChapterRevisions(s.db, workspaceID, workspace, revisions); err != nil {
 		return ProjectSummary{}, err
@@ -348,4 +435,22 @@ func importedProjectTitle(title string, workspaces map[string]Workspace) string 
 
 func invalidProjectBackup(message string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidProjectBackup, message)
+}
+
+func remapBackupChapterIDs(ids []int64, chapterIDMap map[int64]int64) ([]int64, error) {
+	result := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, oldID := range ids {
+		newID, exists := chapterIDMap[oldID]
+		if !exists {
+			return nil, fmt.Errorf("world asset references an unknown chapter")
+		}
+		if _, duplicate := seen[newID]; duplicate {
+			continue
+		}
+		seen[newID] = struct{}{}
+		result = append(result, newID)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	return result, nil
 }

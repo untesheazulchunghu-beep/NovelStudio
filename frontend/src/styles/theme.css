@@ -1,0 +1,144 @@
+/* The default palette stays dark; this opt-in palette keeps the same layout and accent hierarchy for bright workspaces. */
+.app-shell.theme-light {
+  --bg: #f6f7fb;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --panel-hover: #edf0f6;
+  --line: #d9dee8;
+  --line-soft: #e8ebf1;
+  --text: #252a35;
+  --muted: #687184;
+  --muted-2: #8b94a5;
+  --accent: #7659c8;
+  --accent-strong: #6348b4;
+  --accent-dim: rgba(118, 89, 200, .12);
+  --warm: #b26b32;
+  --green: #2e956b;
+  --amber: #a66d16;
+  --red: #c35663;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.app-shell.theme-light .topbar,
+.app-shell.theme-light .activitybar,
+.app-shell.theme-light .sidebar,
+.app-shell.theme-light .assistant-pane { background: var(--panel); }
+.app-shell.theme-light .editor-tabs { background: #eef1f6; }
+.app-shell.theme-light .editor-tab.active { color: #252a35; background: var(--bg); }
+.app-shell.theme-light .brand-name { color: #252a35; }
+.app-shell.theme-light .workspace-picker select { color: #596273; }
+.app-shell.theme-light .workspace-picker select:hover { color: #302a43; }
+.app-shell.theme-light .workspace-picker select option { color: #252a35; background: #fff; }
+.app-shell.theme-light .create-project-button { border-color: var(--line); color: #6953aa; background: #f1f2f8; }
+.app-shell.theme-light .command-search { border-color: var(--line); color: var(--muted); background: #fff; }
+.app-shell.theme-light .command-search kbd,
+.app-shell.theme-light .command-palette-input-row > kbd,
+.app-shell.theme-light .palette-footer kbd { border-color: var(--line); color: var(--muted-2); background: #f1f3f7; }
+.app-shell.theme-light .command-palette { border-color: var(--line); background: #fff; box-shadow: 0 24px 75px rgba(44, 51, 70, .2); }
+.app-shell.theme-light .command-palette-input-row input { color: #252a35; }
+.app-shell.theme-light .palette-result { color: #424958; }
+.app-shell.theme-light .palette-result:hover,
+.app-shell.theme-light .palette-result.active { background: #edf0f6; }
+.app-shell.theme-light .palette-result-kind { border-color: var(--line); }
+.app-shell.theme-light .activity-button { color: #7f899b; }
+.app-shell.theme-light .activity-button:hover { color: #4d5668; background: #edf0f6; }
+.app-shell.theme-light .activity-button.active { color: var(--accent-strong); background: rgba(118, 89, 200, .1); }
+.app-shell.theme-light .activity-badge { color: #fff; }
+.app-shell.theme-light .activity-unread-dot { border-color: #fff; }
+.app-shell.theme-light .sidebar-header { color: #626b7b; }
+.app-shell.theme-light .project-summary,
+.app-shell.theme-light .context-card,
+.app-shell.theme-light .welcome-chips button,
+.app-shell.theme-light .suggestions button { border-color: var(--line); background: #f1f3f7; }
+.app-shell.theme-light .project-summary-copy strong,
+.app-shell.theme-light .tree-folder,
+.app-shell.theme-light .sidebar-helper strong { color: #3f4654; }
+.app-shell.theme-light .file-tree { color: #687184; }
+.app-shell.theme-light .tree-folder:hover,
+.app-shell.theme-light .tree-file:hover,
+.app-shell.theme-light .context-character:hover,
+.app-shell.theme-light .context-note:hover { background: #edf0f6; }
+.app-shell.theme-light .tree-file.active { color: #4e3a8e; background: rgba(118, 89, 200, .12); }
+.app-shell.theme-light .chapter-action-button:hover:not(:disabled) { background: #e2e5ee; }
+.app-shell.theme-light .sidebar-helper { border-color: rgba(118, 89, 200, .2); background: rgba(118, 89, 200, .06); }
+.app-shell.theme-light .sidebar-helper strong { color: #554583; }
+
+.app-shell.theme-light .toolbar-button { border-color: var(--line); color: #596273; background: #fff; }
+.app-shell.theme-light .toolbar-button:hover { border-color: #b9addf; color: #3e3560; background: #f3f1fa; }
+.app-shell.theme-light .toolbar-button.primary-soft { color: #5e46a5; border-color: rgba(118, 89, 200, .3); background: rgba(118, 89, 200, .1); }
+.app-shell.theme-light .chapter-title-input { color: #252a35; }
+.app-shell.theme-light .crumb-current { color: #606a7b; }
+.app-shell.theme-light .meta-separator { background: #b7bfcd; }
+.app-shell.theme-light .chapter-status select option { color: #252a35; background: #fff; }
+.app-shell.theme-light .summary-box { border-left-color: #8c79c9; background: rgba(118, 89, 200, .06); }
+.app-shell.theme-light .summary-label { color: #68599b; }
+.app-shell.theme-light .summary-box textarea { color: #5f6879; }
+.app-shell.theme-light .summary-box textarea::placeholder { color: #9aa2b0; }
+.app-shell.theme-light .line-numbers { color: #a1a9b7; }
+.app-shell.theme-light .chapter-editor { color: #343b49; }
+.app-shell.theme-light .chapter-editor::placeholder { color: #a0a8b7; }
+.app-shell.theme-light .editor-footer { color: #8791a2; }
+.app-shell.theme-light .empty-editor h2 { color: #333947; }
+
+.app-shell.theme-light .assistant-header,
+.app-shell.theme-light .assistant-tabs,
+.app-shell.theme-light .context-footnote { border-color: var(--line-soft); }
+.app-shell.theme-light .assistant-title strong,
+.app-shell.theme-light .agent-welcome h3,
+.app-shell.theme-light .panel-intro strong,
+.app-shell.theme-light .collection-intro strong,
+.app-shell.theme-light .settings-intro strong { color: #3a4150; }
+.app-shell.theme-light .assistant-tabs button:hover { color: #4d5668; }
+.app-shell.theme-light .agent-welcome p,
+.app-shell.theme-light .message-content,
+.app-shell.theme-light .context-card p,
+.app-shell.theme-light .character-info p { color: #687184; }
+.app-shell.theme-light .message-meta { color: #7d8798; }
+.app-shell.theme-light .message-meta span:first-child,
+.app-shell.theme-light .outline-title strong,
+.app-shell.theme-light .context-character strong,
+.app-shell.theme-light .note-card-heading { color: #4d5668; }
+.app-shell.theme-light .message-content,
+.app-shell.theme-light .outline-title small,
+.app-shell.theme-light .context-character small,
+.app-shell.theme-light .note-card p { color: #687184; }
+.app-shell.theme-light .chat-message.user .message-content { color: #765d49; }
+.app-shell.theme-light .welcome-chips button,
+.app-shell.theme-light .suggestions button { color: #606a7b; }
+.app-shell.theme-light .composer { background: #f0f2f6; }
+.app-shell.theme-light .composer textarea,
+.app-shell.theme-light .settings-view input,
+.app-shell.theme-light .settings-view select { border-color: var(--line); color: #3c4453; background: #fff; }
+.app-shell.theme-light .composer textarea::placeholder { color: #9aa2b0; }
+.app-shell.theme-light .mode-switcher button { color: #7c8697; }
+.app-shell.theme-light .mode-switcher button.active { color: #5c469e; background: rgba(118, 89, 200, .12); }
+.app-shell.theme-light .outline-item:hover { background: #edf0f6; }
+.app-shell.theme-light .outline-item.active { border-color: rgba(118, 89, 200, .2); background: rgba(118, 89, 200, .08); }
+.app-shell.theme-light .outline-title strong { color: #4d5668; }
+.app-shell.theme-light .context-card,
+.app-shell.theme-light .revision-list,
+.app-shell.theme-light .revision-preview { border-color: var(--line); background: #fff; }
+.app-shell.theme-light .context-tags span { color: #68599b; background: rgba(118, 89, 200, .1); }
+.app-shell.theme-light .character-traits { color: #657083; }
+.app-shell.theme-light .character-traits i { color: #657083; background: #e9edf3; }
+
+.app-shell.theme-light .modal-backdrop { background: rgba(40, 46, 62, .38); }
+.app-shell.theme-light .project-dialog { border-color: var(--line); background: #fff; box-shadow: 0 24px 70px rgba(44, 51, 70, .24); }
+.app-shell.theme-light .project-dialog h2 { color: #2d3340; }
+.app-shell.theme-light .project-dialog label { color: #687184; }
+.app-shell.theme-light .project-dialog input,
+.app-shell.theme-light .project-dialog textarea,
+.app-shell.theme-light .project-dialog select { border-color: var(--line); color: #3c4453; background: #f8f9fb; }
+.app-shell.theme-light .project-dialog input::placeholder,
+.app-shell.theme-light .project-dialog textarea::placeholder { color: #9aa2b0; }
+.app-shell.theme-light .rewrite-preview-original,
+.app-shell.theme-light .revision-compare-pane pre,
+.app-shell.theme-light .revision-preview pre { border-color: var(--line); color: #4e5869; background: #f4f6f9; }
+.app-shell.theme-light .help-shortcuts > div { border-color: var(--line); color: #687184; }
+.app-shell.theme-light .help-shortcuts kbd { border-color: var(--line); color: #68599b; background: #f1f3f7; }
+.app-shell.theme-light .delete-project-warning { color: #96515a; background: rgba(195, 86, 99, .08); }
+.app-shell.theme-light .delete-project-warning strong { color: #7d3d47; }
+.app-shell.theme-light .statusbar { color: #687184; background: #eef1f6; }
+.app-shell.theme-light .status-progress { background: #d7dce6; }
+.app-shell.theme-light .selection-context.empty { background: #f1f3f7; }

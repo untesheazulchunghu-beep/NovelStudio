@@ -27,6 +27,10 @@ var ErrInvalidCharacterInput = errors.New("invalid character input")
 
 var ErrInvalidNoteInput = errors.New("invalid note input")
 
+var ErrInvalidTimelineEventInput = errors.New("invalid timeline event input")
+
+var ErrInvalidWorldAssetInput = errors.New("invalid world asset input")
+
 type Store struct {
 	mu                      sync.RWMutex
 	db                      *sql.DB
@@ -118,7 +122,7 @@ func (s *Store) Response(workspaceID string) (WorkspaceResponse, bool) {
 	return WorkspaceResponse{
 		Workspace: WorkspaceView{
 			ID: workspace.ID, Project: workspace.Project, Chapters: chapters,
-			Characters: characters, Notes: append([]Note{}, workspace.Notes...), Chat: append([]ChatMessage{}, workspace.Chat...),
+			Characters: characters, Notes: append([]Note{}, workspace.Notes...), Timeline: append([]TimelineEvent{}, workspace.Timeline...), WorldAssets: cloneWorldAssets(workspace.WorldAssets), Chat: append([]ChatMessage{}, workspace.Chat...),
 			Settings: settingsView(workspace.Settings), UpdatedAt: workspace.UpdatedAt,
 		},
 		Stats: calculateStats(workspace),

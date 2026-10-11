@@ -151,7 +151,13 @@ func persistWorkspaceWithChapterRevisions(db *sql.DB, workspaceID string, worksp
 	if err != nil {
 		return fmt.Errorf("save workspace project: %w", err)
 	}
-	for _, table := range []string{"chapter_revisions", "chapters", "characters", "notes", "chat_messages"} {
+	if _, err := tx.Exec(`DELETE FROM world_asset_links WHERE from_asset_id IN (SELECT id FROM world_assets WHERE workspace_id = ?) OR to_asset_id IN (SELECT id FROM world_assets WHERE workspace_id = ?)`, workspaceID, workspaceID); err != nil {
+		return fmt.Errorf("replace workspace world asset relations: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM world_asset_chapters WHERE asset_id IN (SELECT id FROM world_assets WHERE workspace_id = ?) OR chapter_id IN (SELECT id FROM chapters WHERE workspace_id = ?)`, workspaceID, workspaceID); err != nil {
+		return fmt.Errorf("replace workspace world asset chapter links: %w", err)
+	}
+	for _, table := range []string{"chapter_revisions", "chapters", "characters", "notes", "timeline_events", "world_assets", "chat_messages"} {
 		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE workspace_id = ?`, workspaceID); err != nil {
 			return fmt.Errorf("replace workspace %s: %w", table, err)
 		}
@@ -194,6 +200,31 @@ func persistWorkspaceWithChapterRevisions(db *sql.DB, workspaceID string, worksp
 			return fmt.Errorf("save note %d: %w", note.ID, err)
 		}
 	}
+	for _, event := range workspace.Timeline {
+		if _, err := tx.Exec(`INSERT INTO timeline_events (id, workspace_id, title, time_label, description, status, chapter_id, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?)`, event.ID, workspaceID, event.Title, event.TimeLabel,
+			event.Description, event.Status, event.ChapterID, event.UpdatedAt); err != nil {
+			return fmt.Errorf("save timeline event %d: %w", event.ID, err)
+		}
+	}
+	for _, asset := range workspace.WorldAssets {
+		if _, err := tx.Exec(`INSERT INTO world_assets (id, workspace_id, name, kind, description, details, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, asset.ID, workspaceID, asset.Name, asset.Kind, asset.Description, asset.Details, asset.UpdatedAt); err != nil {
+			return fmt.Errorf("save world asset %d: %w", asset.ID, err)
+		}
+	}
+	for _, asset := range workspace.WorldAssets {
+		for _, chapterID := range asset.ChapterIDs {
+			if _, err := tx.Exec(`INSERT INTO world_asset_chapters (asset_id, chapter_id) VALUES (?, ?)`, asset.ID, chapterID); err != nil {
+				return fmt.Errorf("save world asset %d chapter link %d: %w", asset.ID, chapterID, err)
+			}
+		}
+		for _, relatedID := range asset.RelatedAssetIDs {
+			if _, err := tx.Exec(`INSERT INTO world_asset_links (from_asset_id, to_asset_id) VALUES (?, ?)`, asset.ID, relatedID); err != nil {
+				return fmt.Errorf("save world asset %d relation %d: %w", asset.ID, relatedID, err)
+			}
+		}
+	}
 	for _, message := range workspace.Chat {
 		if _, err := tx.Exec(`INSERT INTO chat_messages (id, workspace_id, role, content, created_at, mode, request_id, request_fingerprint)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, message.ID, workspaceID, message.Role, message.Content, message.CreatedAt, message.Mode, message.RequestID, message.RequestFingerprint); err != nil {
@@ -224,7 +255,7 @@ func loadWorkspaceMetadata(db *sql.DB, workspaceID string) (Workspace, error) {
 }
 
 func loadWorkspaceWithChapterContent(db *sql.DB, workspaceID string, includeContent bool) (Workspace, error) {
-	workspace := Workspace{ID: workspaceID, Chapters: []Chapter{}, Characters: []Character{}, Notes: []Note{}, Chat: []ChatMessage{}}
+	workspace := Workspace{ID: workspaceID, Chapters: []Chapter{}, Characters: []Character{}, Notes: []Note{}, Timeline: []TimelineEvent{}, WorldAssets: []WorldAsset{}, Chat: []ChatMessage{}}
 	project := &workspace.Project
 	if err := db.QueryRow(`SELECT project_id, title, subtitle, genre, premise, author, status,
 		created_at, updated_at, word_target, current_view FROM workspaces WHERE workspace_id = ?`, workspaceID).Scan(
@@ -308,6 +339,91 @@ func loadWorkspaceWithChapterContent(db *sql.DB, workspaceID string, includeCont
 	}
 	if err := noteRows.Close(); err != nil {
 		return Workspace{}, fmt.Errorf("close note query: %w", err)
+	}
+
+	timelineRows, err := db.Query(`SELECT id, title, time_label, description, status, COALESCE(chapter_id, 0), updated_at
+		FROM timeline_events WHERE workspace_id = ? ORDER BY id`, workspaceID)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("query timeline events: %w", err)
+	}
+	for timelineRows.Next() {
+		var event TimelineEvent
+		if err := timelineRows.Scan(&event.ID, &event.Title, &event.TimeLabel, &event.Description, &event.Status, &event.ChapterID, &event.UpdatedAt); err != nil {
+			_ = timelineRows.Close()
+			return Workspace{}, fmt.Errorf("read timeline event: %w", err)
+		}
+		workspace.Timeline = append(workspace.Timeline, event)
+	}
+	if err := timelineRows.Err(); err != nil {
+		_ = timelineRows.Close()
+		return Workspace{}, fmt.Errorf("iterate timeline events: %w", err)
+	}
+	if err := timelineRows.Close(); err != nil {
+		return Workspace{}, fmt.Errorf("close timeline query: %w", err)
+	}
+
+	worldAssetRows, err := db.Query(`SELECT id, name, kind, description, details, updated_at
+		FROM world_assets WHERE workspace_id = ? ORDER BY id`, workspaceID)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("query world assets: %w", err)
+	}
+	for worldAssetRows.Next() {
+		var asset WorldAsset
+		if err := worldAssetRows.Scan(&asset.ID, &asset.Name, &asset.Kind, &asset.Description, &asset.Details, &asset.UpdatedAt); err != nil {
+			_ = worldAssetRows.Close()
+			return Workspace{}, fmt.Errorf("read world asset: %w", err)
+		}
+		asset.ChapterIDs = []int64{}
+		asset.RelatedAssetIDs = []int64{}
+		workspace.WorldAssets = append(workspace.WorldAssets, asset)
+	}
+	if err := worldAssetRows.Err(); err != nil {
+		_ = worldAssetRows.Close()
+		return Workspace{}, fmt.Errorf("iterate world assets: %w", err)
+	}
+	if err := worldAssetRows.Close(); err != nil {
+		return Workspace{}, fmt.Errorf("close world asset query: %w", err)
+	}
+	for index := range workspace.WorldAssets {
+		asset := &workspace.WorldAssets[index]
+		chapterRows, err := db.Query(`SELECT chapter_id FROM world_asset_chapters WHERE asset_id = ? ORDER BY chapter_id`, asset.ID)
+		if err != nil {
+			return Workspace{}, fmt.Errorf("query world asset chapter links: %w", err)
+		}
+		for chapterRows.Next() {
+			var chapterID int64
+			if err := chapterRows.Scan(&chapterID); err != nil {
+				_ = chapterRows.Close()
+				return Workspace{}, fmt.Errorf("read world asset chapter link: %w", err)
+			}
+			asset.ChapterIDs = append(asset.ChapterIDs, chapterID)
+		}
+		if err := chapterRows.Err(); err != nil {
+			_ = chapterRows.Close()
+			return Workspace{}, fmt.Errorf("iterate world asset chapter links: %w", err)
+		}
+		if err := chapterRows.Close(); err != nil {
+			return Workspace{}, fmt.Errorf("close world asset chapter query: %w", err)
+		}
+		linkRows, err := db.Query(`SELECT to_asset_id FROM world_asset_links WHERE from_asset_id = ? ORDER BY to_asset_id`, asset.ID)
+		if err != nil {
+			return Workspace{}, fmt.Errorf("query world asset relations: %w", err)
+		}
+		for linkRows.Next() {
+			var relatedID int64
+			if err := linkRows.Scan(&relatedID); err != nil {
+				_ = linkRows.Close()
+				return Workspace{}, fmt.Errorf("read world asset relation: %w", err)
+			}
+			asset.RelatedAssetIDs = append(asset.RelatedAssetIDs, relatedID)
+		}
+		if err := linkRows.Err(); err != nil {
+			_ = linkRows.Close()
+			return Workspace{}, fmt.Errorf("iterate world asset relations: %w", err)
+		}
+		if err := linkRows.Close(); err != nil {
+			return Workspace{}, fmt.Errorf("close world asset relation query: %w", err)
+		}
 	}
 
 	chatRows, err := db.Query(`SELECT id, role, content, created_at, mode, request_id, request_fingerprint FROM chat_messages

@@ -1,11 +1,12 @@
 import type { PaletteResult } from '../workbenchTypes'
 import { statusLabel } from './format'
-import type { Chapter, ChapterSearchResult, Character, Note } from '../types'
+import type { Chapter, ChapterSearchResult, Character, Note, TimelineEvent, WorldAsset } from '../types'
 
 export const paletteCommands: PaletteResult[] = [
   { id: 'new-chapter', kind: 'command', title: '新建章节', detail: '在当前项目添加一章', searchable: '新建 添加 创建 章节 chapter add create' },
   { id: 'new-character', kind: 'command', title: '新建角色', detail: '添加角色档案', searchable: '新建 添加 创建 角色 人物 character add create' },
   { id: 'new-note', kind: 'command', title: '新建便笺', detail: '记录一条灵感或线索', searchable: '新建 添加 创建 便笺 灵感 note idea add create' },
+  { id: 'new-timeline', kind: 'command', title: '新建时间线事件', detail: '记录故事中的关键变化', searchable: '新建 添加 创建 时间线 事件 故事 timeline event add create' },
   { id: 'edit-project', kind: 'command', title: '编辑项目资料', detail: '修改名称、设定和目标字数', searchable: '编辑 修改 项目 资料 名称 设定 字数 project edit' },
   { id: 'export-markdown', kind: 'command', title: '导出 Markdown', detail: '下载当前项目的 Markdown 文件', searchable: '导出 markdown 下载 export' },
   { id: 'export-docx', kind: 'command', title: '导出 Word 文档（DOCX）', detail: '下载包含当前章节编辑内容的 Word 文档', searchable: '导出 word docx 文档 下载 export' },
@@ -20,6 +21,8 @@ export const paletteCommands: PaletteResult[] = [
   { id: 'open-characters', kind: 'command', title: '打开角色档案', detail: '浏览当前项目的角色', searchable: '打开 查看 角色 人物 档案 characters' },
   { id: 'open-notes', kind: 'command', title: '打开灵感便笺', detail: '浏览当前项目的便笺', searchable: '打开 查看 便笺 灵感 notes' },
 ]
+
+paletteCommands.splice(4, 0, { id: 'new-world-asset', kind: 'command', title: '新建世界观资料', detail: '添加地点、组织、物件或概念', searchable: '新建 添加 创建 世界观 资料 地点 组织 物件 概念 world asset add create' })
 
 export function paletteQueryTerms(query: string) {
   return query.trim().split(/\s+/).filter(Boolean).map((term) =>
@@ -59,9 +62,11 @@ export interface PaletteSearchInput {
   editorContent: string
   characters: Character[]
   notes: Note[]
+  timeline: TimelineEvent[]
+  worldAssets: WorldAsset[]
 }
 
-export function buildPaletteResults({ searchOpen, hasData, searchQuery, currentChapter, chapterBodyLoading, projectActionBusy, chapterSearchResults, editorTitle, editorSummary, editorContent, characters, notes }: PaletteSearchInput): PaletteResult[] {
+export function buildPaletteResults({ searchOpen, hasData, searchQuery, currentChapter, chapterBodyLoading, projectActionBusy, chapterSearchResults, editorTitle, editorSummary, editorContent, characters, notes, timeline, worldAssets }: PaletteSearchInput): PaletteResult[] {
   if (!searchOpen || !hasData) return []
   const query = searchQuery.trim()
   const queryTerms = paletteQueryTerms(query)
@@ -73,7 +78,7 @@ export function buildPaletteResults({ searchOpen, hasData, searchQuery, currentC
         ? !currentChapter || chapterBodyLoading || projectActionBusy
         : command.id === 'new-chapter'
         ? projectActionBusy
-        : command.id === 'new-character' || command.id === 'new-note'
+        : command.id === 'new-character' || command.id === 'new-note' || command.id === 'new-timeline' || command.id === 'new-world-asset'
           ? projectActionBusy
         : ['edit-project', 'export-markdown', 'export-backup', 'export-docx', 'export-epub', 'import-backup', 'open-context'].includes(command.id) && projectActionBusy,
     }))
@@ -127,5 +132,26 @@ export function buildPaletteResults({ searchOpen, hasData, searchQuery, currentC
     const detail = searchExcerpt(note.body, queryTerms, 78) || '项目便笺'
     noteResults.push({ id: `note:${note.id}`, kind: 'note', title: note.title, detail, searchable: searchableFields.join(' '), entityId: note.id, disabled: projectActionBusy })
   }
-  return [...commandResults, ...chapterResults, ...characterResults, ...noteResults]
+  const timelineResults: PaletteResult[] = []
+  for (const event of timeline) {
+    if (timelineResults.length >= 10) break
+    const searchableFields = [event.title, event.time_label, event.description, event.status]
+    if (!matchesPaletteQuery(searchableFields, queryTerms)) continue
+    const detail = [event.time_label, searchExcerpt(event.description, queryTerms, 78)].filter(Boolean).join(' · ') || '故事时间线'
+    timelineResults.push({ id: `timeline:${event.id}`, kind: 'timeline', title: event.title, detail, searchable: searchableFields.join(' '), entityId: event.id, disabled: projectActionBusy })
+  }
+  const worldAssetResults: PaletteResult[] = []
+  for (const asset of worldAssets) {
+    if (worldAssetResults.length >= 10) break
+    const searchableFields = [asset.name, asset.kind, asset.description, asset.details]
+    if (!matchesPaletteQuery(searchableFields, queryTerms)) continue
+    const detail = [asset.kind, searchExcerpt(asset.description, queryTerms, 78)].filter(Boolean).join(' · ') || '世界观资料'
+    worldAssetResults.push({ id: `world-asset:${asset.id}`, kind: 'world-asset', title: asset.name, detail, searchable: searchableFields.join(' '), entityId: asset.id, disabled: projectActionBusy })
+  }
+  return [...commandResults, ...chapterResults, ...characterResults, ...noteResults, ...timelineResults, ...worldAssetResults]
 }
+
+paletteCommands.push(
+  { id: 'open-timeline', kind: 'command', title: '\u6253\u5f00\u6545\u4e8b\u65f6\u95f4\u7ebf', detail: '\u6d4f\u89c8\u5173\u952e\u4e8b\u4ef6', searchable: '\u6253\u5f00 \u67e5\u770b \u65f6\u95f4\u7ebf \u6545\u4e8b \u4e8b\u4ef6 timeline' },
+  { id: 'open-world-assets', kind: 'command', title: '\u6253\u5f00\u4e16\u754c\u89c2\u8d44\u6599', detail: '\u6d4f\u89c8\u5730\u70b9\u3001\u7ec4\u7ec7\u3001\u7269\u4ef6\u548c\u6982\u5ff5', searchable: '\u6253\u5f00 \u67e5\u770b \u4e16\u754c\u89c2 \u8d44\u6599 \u5730\u70b9 \u7ec4\u7ec7 \u7269\u4ef6 \u6982\u5ff5 world assets' },
+)

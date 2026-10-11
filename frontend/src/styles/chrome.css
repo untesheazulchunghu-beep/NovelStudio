@@ -34,6 +34,8 @@
 .palette-result-icon { display: flex; align-items: center; justify-content: center; width: 27px; height: 27px; flex: 0 0 27px; border-radius: 7px; color: #b7a5ee; background: rgba(168,146,246,.11); }
 .palette-result-icon.character { color: #e7ad7e; background: rgba(230,173,125,.1); }
 .palette-result-icon.note { color: #e7ad7e; background: rgba(230,173,125,.1); }
+.palette-result-icon.timeline { color: #86c6e8; background: rgba(134,198,232,.1); }
+.palette-result-icon.world-asset { color: #a7c78f; background: rgba(167,199,143,.1); }
 .palette-result-icon.command { color: #8fc5b3; background: rgba(99,199,154,.1); }
 .palette-result-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
 .palette-result-copy strong { overflow: hidden; color: inherit; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }

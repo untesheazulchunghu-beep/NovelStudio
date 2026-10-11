@@ -10,7 +10,7 @@ import {
   sliceUnicodeRange,
   sliceUnicodeTail,
 } from '../lib/text'
-import type { Chapter, ChatMessage, WorkspaceResponse } from '../types'
+import type { Chapter, ChatContextItems, ChatMessage, WorkspaceResponse } from '../types'
 import type { AssistantTab, ChatApplyTarget, ChatRequestRetry, EditorSelection, WritingMode } from '../workbenchTypes'
 import type { Dispatch, SetStateAction } from 'react'
 
@@ -18,6 +18,7 @@ type MutableRef<T> = { current: T }
 
 interface AgentActionsOptions {
   data: WorkspaceResponse | null
+  contextItems: ChatContextItems
   setData: Dispatch<SetStateAction<WorkspaceResponse | null>>
   projectActionBusy: boolean
   chapterBodyLoading: boolean
@@ -66,6 +67,7 @@ interface AgentActionsOptions {
 export function createAgentActions(options: AgentActionsOptions) {
   const {
     data,
+    contextItems,
     setData,
     projectActionBusy,
     chapterBodyLoading,
@@ -159,10 +161,18 @@ export function createAgentActions(options: AgentActionsOptions) {
       : ''
     const chapterTitleForRequest = currentChapter ? editorTitle.trim() || currentChapter.title : ''
     const chapterSummaryForRequest = currentChapter ? editorSummary : ''
+    const contextItemsSignature = {
+      character_ids: [...contextItems.character_ids].sort((left, right) => left - right),
+      note_ids: [...contextItems.note_ids].sort((left, right) => left - right),
+      timeline_event_ids: [...contextItems.timeline_event_ids].sort((left, right) => left - right),
+      world_asset_ids: [...contextItems.world_asset_ids].sort((left, right) => left - right),
+    }
     const requestContextSignature = JSON.stringify([
       [data?.workspace.project.title, data?.workspace.project.genre, data?.workspace.project.premise],
       data?.workspace.characters.slice(0, 16).map((character) => [character.name, character.role, character.description, character.traits.slice(0, 20)]),
       data?.workspace.notes.slice(0, 20).map((note) => [note.title, note.kind, note.body]),
+      data?.workspace.timeline.slice(0, 24).map((event) => [event.id, event.title, event.time_label, event.description, event.status, event.chapter_id]),
+      contextItemsSignature,
       [data?.workspace.settings.provider, data?.workspace.settings.model, data?.workspace.settings.base_url, data?.workspace.settings.temperature],
       data?.workspace.chat.filter((item) => item.role !== 'system').slice(-8).map((item) => [item.role, item.content]),
       currentChapter?.number,
@@ -214,6 +224,7 @@ export function createAgentActions(options: AgentActionsOptions) {
         selectionForRequest,
         chapterTitleForRequest,
         chapterSummaryForRequest,
+        contextItems,
         {
           signal: controller.signal,
           onDelta: (text) => {
@@ -472,6 +483,7 @@ export function createAgentActions(options: AgentActionsOptions) {
         sliceUnicodeTail(editorContentRef.current, 1800),
         editorTitle.trim() || currentChapter.title,
         editorSummary,
+        contextItems,
         controller.signal,
       )
       if (activeWorkspaceRef.current !== workspaceId || currentChapterRef.current?.id !== chapterId) return

@@ -1,4 +1,4 @@
-export type ActivityId = 'explorer' | 'chapters' | 'characters' | 'notes' | 'settings'
+export type ActivityId = 'explorer' | 'chapters' | 'characters' | 'notes' | 'timeline' | 'world' | 'settings'
 
 export type AssistantTab = 'chat' | 'outline' | 'context'
 
@@ -6,7 +6,7 @@ export type WritingMode = 'write' | 'plan' | 'review' | 'edit'
 
 export type ChatRequestRetry = { signature: string; requestID: string; message: string; mode: WritingMode; safeToRetry: boolean; requiresReview: boolean; requiresFreshRequestID: boolean; needsReconcile: boolean }
 
-export type PaletteResultKind = 'chapter' | 'character' | 'note' | 'command'
+export type PaletteResultKind = 'chapter' | 'character' | 'note' | 'timeline' | 'world-asset' | 'command'
 
 export interface EditorSelection {
   chapterId: number

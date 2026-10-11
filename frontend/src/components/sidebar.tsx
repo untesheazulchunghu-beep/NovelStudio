@@ -1,5 +1,8 @@
 import { api } from '../api'
+import { TimelineView } from './timeline'
+import { WorldAssetsView } from './worldAssets'
 import { statusClass } from '../lib/format'
+import type { EditorPreferences } from '../lib/editorPreferences'
 import { Archive, ArrowDownToLine, BookOpen, Check, ChevronDown, ChevronUp, CircleHelp, FilePlus2, FileText, FolderOpen, Lightbulb, ListTodo, Pencil, Plus, Save, Settings2, Trash2, Upload, Users } from 'lucide-react'
 import type { Chapter, Character, Note, SettingsDraft, WorkspaceResponse } from '../types'
 import type { ActivityId } from '../workbenchTypes'
@@ -42,7 +45,10 @@ export function NotesView({ notes, busy, onCreate, onEdit, onDelete }: { notes: 
   return <div className="collection-view"><div className="collection-intro"><div className="collection-icon warm"><Lightbulb size={16} /></div><div><strong>灵感便笺</strong><p>把还没成熟的想法先放在这里。</p></div></div>{notes.map((note) => <div className="note-card" key={note.id}><div className="note-card-heading"><Lightbulb size={13} /><strong>{note.title}</strong><span>{note.kind}</span><div className="collection-actions"><button className="subtle-icon" onClick={() => onEdit(note)} aria-label={`编辑便笺 ${note.title}`} title="编辑" disabled={busy}><Pencil size={13} /></button><button className="subtle-icon danger" onClick={() => onDelete(note)} aria-label={`删除便笺 ${note.title}`} title="删除" disabled={busy}><Trash2 size={13} /></button></div></div><p>{note.body}</p></div>)}{notes.length === 0 && <div className="collection-empty">还没有便笺，记录下线索、设定或之后要处理的想法。</div>}<button className="dashed-add" onClick={onCreate} disabled={busy}><Plus size={14} /> 新建便笺</button></div>
 }
 
-export function SettingsView({ settings, setSettings, onSave, saved, saving, locked, dirty, error }: { settings: SettingsDraft | null; setSettings: (settings: SettingsDraft) => void; onSave: () => void; saved: boolean; saving: boolean; locked: boolean; dirty: boolean; error: string }) {
+export { TimelineView }
+export { WorldAssetsView }
+
+export function SettingsView({ settings, setSettings, onSave, saved, saving, locked, dirty, error, editorPreferences, setEditorPreferences }: { settings: SettingsDraft | null; setSettings: (settings: SettingsDraft) => void; onSave: () => void; saved: boolean; saving: boolean; locked: boolean; dirty: boolean; error: string; editorPreferences: EditorPreferences; setEditorPreferences: (preferences: EditorPreferences) => void }) {
   if (!settings) return <div className="loading-side">加载设置…</div>
   const apiKeyPlaceholder = settings.api_key_configured
     ? '留空以保留已保存的密钥'
@@ -66,6 +72,13 @@ export function SettingsView({ settings, setSettings, onSave, saved, saving, loc
       <label>创造性 <div className="range-row"><input disabled={saving || locked} type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={(event) => setSettings({ ...settings, temperature: Number(event.target.value) })} /><span>{settings.temperature.toFixed(1)}</span></div></label>
       <button className="primary-button settings-save" onClick={onSave} disabled={saving || locked || !dirty}>{saving ? '正在保存…' : saved ? <><Check size={14} /> 已保存</> : <><Save size={14} /> 保存设置</>}</button>
       <div className="settings-note"><CircleHelp size={13} /> 密钥只发送到本机服务，不会在设置读取或工作区响应中返回。</div>
+      <div className="settings-divider" />
+      <div className="settings-subheading">编辑器外观</div>
+      <label>正文大小<select value={editorPreferences.fontSize} onChange={(event) => setEditorPreferences({ ...editorPreferences, fontSize: Number(event.target.value) })}><option value={13}>小（13px）</option><option value={14}>标准（14px）</option><option value={15}>舒适（15px）</option><option value={16}>大（16px）</option><option value={18}>特大（18px）</option><option value={20}>超大（20px）</option></select></label>
+      <label>正文样式<select value={editorPreferences.fontFamily} onChange={(event) => setEditorPreferences({ ...editorPreferences, fontFamily: event.target.value as EditorPreferences['fontFamily'] })}><option value="serif">衬线字体，适合长篇阅读</option><option value="sans">无衬线字体，界面感更强</option><option value="mono">等宽字体，适合校对</option></select></label>
+      <label>界面主题<select value={editorPreferences.theme} onChange={(event) => setEditorPreferences({ ...editorPreferences, theme: event.target.value as EditorPreferences['theme'] })}><option value="dark">深色，适合夜间写作</option><option value="light">浅色，适合明亮环境</option></select></label>
+      <label className="settings-checkbox"><input type="checkbox" checked={editorPreferences.focusMode} onChange={(event) => setEditorPreferences({ ...editorPreferences, focusMode: event.target.checked })} /><span>专注写作模式</span><small>隐藏侧栏和 Agent，保留编辑器</small></label>
+      <div className="settings-note"><CircleHelp size={13} /> 编辑器偏好保存在当前浏览器，重启后仍会保留。</div>
     </div>
   )
 }

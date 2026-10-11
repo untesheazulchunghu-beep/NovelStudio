@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -17,7 +18,7 @@ const localWorkspaceID = "default"
 
 const chatRequestSchemaVersion = 5
 
-const sqliteSchemaVersion = 7
+const sqliteSchemaVersion = 9
 
 const chapterFTSSchemaVersion = 7
 
@@ -41,6 +42,10 @@ func openSQLiteStore(path string) (*Store, string, error) {
 			}
 			legacyPath = absoluteLegacyPath
 		}
+	}
+	protectedDatabasePath, databaseExisted, err := existingSQLiteDatabase(databasePath)
+	if err != nil {
+		return nil, "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o755); err != nil {
 		return nil, "", fmt.Errorf("create data directory: %w", err)
@@ -84,6 +89,12 @@ func openSQLiteStore(path string) (*Store, string, error) {
 			return nil, "", fmt.Errorf("configure SQLite: %w", err)
 		}
 	}
+	if databaseExisted {
+		if err := backupSQLiteBeforeMigration(db, protectedDatabasePath); err != nil {
+			_ = db.Close()
+			return nil, "", err
+		}
+	}
 	if err := migrateSQLite(db); err != nil {
 		_ = db.Close()
 		return nil, "", err
@@ -95,6 +106,52 @@ func openSQLiteStore(path string) (*Store, string, error) {
 		}
 	}
 	return store, legacyPath, nil
+}
+
+func existingSQLiteDatabase(databasePath string) (string, bool, error) {
+	protectedPath, shouldProtect := sqliteProtectionPath(databasePath)
+	if !shouldProtect {
+		return "", false, nil
+	}
+	info, err := os.Stat(protectedPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return protectedPath, false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("inspect SQLite database %s: %w", protectedPath, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return protectedPath, false, nil
+	}
+	return protectedPath, true, nil
+}
+
+func backupSQLiteBeforeMigration(db *sql.DB, databasePath string) error {
+	var currentVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&currentVersion); err != nil {
+		return fmt.Errorf("read SQLite schema version before backup: %w", err)
+	}
+	if currentVersion >= sqliteSchemaVersion {
+		return nil
+	}
+	backupPath := fmt.Sprintf("%s.pre-migration-v%d.bak", databasePath, currentVersion)
+	if _, err := os.Stat(backupPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect SQLite migration backup %s: %w", backupPath, err)
+	}
+	temporaryPath := fmt.Sprintf("%s.tmp-%d", backupPath, time.Now().UnixNano())
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if _, err := db.Exec("VACUUM INTO ?", temporaryPath); err != nil {
+		return fmt.Errorf("create SQLite migration backup %s: %w", backupPath, err)
+	}
+	if err := os.Rename(temporaryPath, backupPath); err != nil {
+		return fmt.Errorf("store SQLite migration backup %s: %w", backupPath, err)
+	}
+	if err := protectLocalFile(backupPath, "SQLite migration backup"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func sqliteProtectionPath(databasePath string) (string, bool) {

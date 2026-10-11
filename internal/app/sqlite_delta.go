@@ -43,6 +43,12 @@ func persistWorkspaceDeltaWithChatRequest(db *sql.DB, workspaceID string, previo
 	if err := persistNoteDelta(tx, workspaceID, previous.Notes, workspace.Notes); err != nil {
 		return err
 	}
+	if err := persistTimelineDelta(tx, workspaceID, previous.Timeline, workspace.Timeline); err != nil {
+		return err
+	}
+	if err := persistWorldAssetDelta(tx, workspaceID, previous.WorldAssets, workspace.WorldAssets); err != nil {
+		return err
+	}
 	if err := persistChatDelta(tx, workspaceID, previous.Chat, workspace.Chat); err != nil {
 		return err
 	}
@@ -230,6 +236,97 @@ func persistNoteDelta(tx *sql.Tx, workspaceID string, previous, current []Note) 
 		}
 	}
 	return nil
+}
+
+func persistTimelineDelta(tx *sql.Tx, workspaceID string, previous, current []TimelineEvent) error {
+	previousByID := make(map[int64]TimelineEvent, len(previous))
+	for _, event := range previous {
+		previousByID[event.ID] = event
+	}
+	if err := deleteRemovedRows(tx, "timeline_events", workspaceID, previous, current, func(event TimelineEvent) int64 { return event.ID }); err != nil {
+		return err
+	}
+	for _, event := range current {
+		old, exists := previousByID[event.ID]
+		if exists && old == event {
+			continue
+		}
+		if exists {
+			if _, err := tx.Exec(`UPDATE timeline_events SET title = ?, time_label = ?, description = ?, status = ?, chapter_id = NULLIF(?, 0), updated_at = ?
+				WHERE workspace_id = ? AND id = ?`, event.Title, event.TimeLabel, event.Description, event.Status, event.ChapterID, event.UpdatedAt, workspaceID, event.ID); err != nil {
+				return fmt.Errorf("update timeline event %d: %w", event.ID, err)
+			}
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO timeline_events (id, workspace_id, title, time_label, description, status, chapter_id, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?)`, event.ID, workspaceID, event.Title, event.TimeLabel, event.Description, event.Status, event.ChapterID, event.UpdatedAt); err != nil {
+			return fmt.Errorf("insert timeline event %d: %w", event.ID, err)
+		}
+	}
+	return nil
+}
+
+func persistWorldAssetDelta(tx *sql.Tx, workspaceID string, previous, current []WorldAsset) error {
+	previousByID := make(map[int64]WorldAsset, len(previous))
+	for _, asset := range previous {
+		previousByID[asset.ID] = asset
+	}
+	if err := deleteRemovedRows(tx, "world_assets", workspaceID, previous, current, func(asset WorldAsset) int64 { return asset.ID }); err != nil {
+		return err
+	}
+	changedAssets := make([]WorldAsset, 0, len(current))
+	for _, asset := range current {
+		old, exists := previousByID[asset.ID]
+		if exists && sameWorldAsset(old, asset) {
+			continue
+		}
+		if exists {
+			if _, err := tx.Exec(`UPDATE world_assets SET name = ?, kind = ?, description = ?, details = ?, updated_at = ?
+				WHERE workspace_id = ? AND id = ?`, asset.Name, asset.Kind, asset.Description, asset.Details, asset.UpdatedAt, workspaceID, asset.ID); err != nil {
+				return fmt.Errorf("update world asset %d: %w", asset.ID, err)
+			}
+		} else if _, err := tx.Exec(`INSERT INTO world_assets (id, workspace_id, name, kind, description, details, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, asset.ID, workspaceID, asset.Name, asset.Kind, asset.Description, asset.Details, asset.UpdatedAt); err != nil {
+			return fmt.Errorf("insert world asset %d: %w", asset.ID, err)
+		}
+		changedAssets = append(changedAssets, asset)
+	}
+	for _, asset := range changedAssets {
+		if _, err := tx.Exec(`DELETE FROM world_asset_chapters WHERE asset_id = ?`, asset.ID); err != nil {
+			return fmt.Errorf("replace world asset %d chapter links: %w", asset.ID, err)
+		}
+		for _, chapterID := range asset.ChapterIDs {
+			if _, err := tx.Exec(`INSERT INTO world_asset_chapters (asset_id, chapter_id) VALUES (?, ?)`, asset.ID, chapterID); err != nil {
+				return fmt.Errorf("save world asset %d chapter link %d: %w", asset.ID, chapterID, err)
+			}
+		}
+		if _, err := tx.Exec(`DELETE FROM world_asset_links WHERE from_asset_id = ?`, asset.ID); err != nil {
+			return fmt.Errorf("replace world asset %d relations: %w", asset.ID, err)
+		}
+		for _, relatedID := range asset.RelatedAssetIDs {
+			if _, err := tx.Exec(`INSERT INTO world_asset_links (from_asset_id, to_asset_id) VALUES (?, ?)`, asset.ID, relatedID); err != nil {
+				return fmt.Errorf("save world asset %d relation %d: %w", asset.ID, relatedID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func sameWorldAsset(left, right WorldAsset) bool {
+	if left.ID != right.ID || left.Name != right.Name || left.Kind != right.Kind || left.Description != right.Description || left.Details != right.Details || left.UpdatedAt != right.UpdatedAt || len(left.ChapterIDs) != len(right.ChapterIDs) || len(left.RelatedAssetIDs) != len(right.RelatedAssetIDs) {
+		return false
+	}
+	for index := range left.ChapterIDs {
+		if left.ChapterIDs[index] != right.ChapterIDs[index] {
+			return false
+		}
+	}
+	for index := range left.RelatedAssetIDs {
+		if left.RelatedAssetIDs[index] != right.RelatedAssetIDs[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func persistChatDelta(tx *sql.Tx, workspaceID string, previous, current []ChatMessage) error {

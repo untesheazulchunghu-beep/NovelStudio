@@ -27,6 +27,18 @@ const maxNoteTitleLength = 120
 
 const maxNoteBodyLength = 2000
 
+const maxTimelineTitleLength = 120
+
+const maxTimelineTimeLabelLength = 80
+
+const maxTimelineDescriptionLength = 2000
+
+const maxWorldAssetNameLength = 120
+
+const maxWorldAssetDescriptionLength = 1600
+
+const maxWorldAssetDetailsLength = 2400
+
 const maxChapterTitleLength = 120
 
 const maxChapterSummaryLength = 1200
@@ -115,6 +127,39 @@ func validateNoteTextFields(title, body string) error {
 		return err
 	}
 	return validateTextLength("note body", body, maxNoteBodyLength)
+}
+
+func validateTimelineEventTextFields(input TimelineEventInput) error {
+	if err := validateTextLength("timeline event title", strings.TrimSpace(input.Title), maxTimelineTitleLength); err != nil {
+		return err
+	}
+	if err := validateTextLength("timeline event time label", strings.TrimSpace(input.TimeLabel), maxTimelineTimeLabelLength); err != nil {
+		return err
+	}
+	return validateTextLength("timeline event description", input.Description, maxTimelineDescriptionLength)
+}
+
+func normalizeTimelineEventStatus(status string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "planned":
+		return "planned", nil
+	case "active":
+		return "active", nil
+	case "done":
+		return "done", nil
+	default:
+		return "", fmt.Errorf("timeline event status must be planned, active, or done")
+	}
+}
+
+func validateWorldAssetTextFields(input WorldAssetInput) error {
+	if err := validateTextLength("world asset name", strings.TrimSpace(input.Name), maxWorldAssetNameLength); err != nil {
+		return err
+	}
+	if err := validateTextLength("world asset description", strings.TrimSpace(input.Description), maxWorldAssetDescriptionLength); err != nil {
+		return err
+	}
+	return validateTextLength("world asset details", strings.TrimSpace(input.Details), maxWorldAssetDetailsLength)
 }
 
 func validateChapterTextFields(input ChapterInput) error {

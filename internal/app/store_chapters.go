@@ -124,6 +124,14 @@ func (s *Store) DeleteChapter(workspaceID string, id int64) error {
 		for chapterIndex := range workspace.Chapters {
 			workspace.Chapters[chapterIndex].Number = chapterIndex + 1
 		}
+		for timelineIndex := range workspace.Timeline {
+			if workspace.Timeline[timelineIndex].ChapterID == id {
+				workspace.Timeline[timelineIndex].ChapterID = 0
+			}
+		}
+		for assetIndex := range workspace.WorldAssets {
+			workspace.WorldAssets[assetIndex].ChapterIDs = removeID(workspace.WorldAssets[assetIndex].ChapterIDs, id)
+		}
 		touchProject(&workspace)
 		return s.persistWorkspaceLocked(workspaceID, workspace)
 	}

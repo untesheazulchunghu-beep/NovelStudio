@@ -1,4 +1,4 @@
-import type { Chapter, ChapterRevision, ChapterRevisionSummary, ChapterSearchResult, ChatResponse, Character, Note, ProjectInput, ProjectSummary, Settings, SettingsUpdate, WorkspaceResponse } from './types'
+import type { Chapter, ChapterRevision, ChapterRevisionSummary, ChapterSearchResult, ChatContextItems, ChatResponse, Character, Note, ProjectInput, ProjectSummary, Settings, SettingsUpdate, TimelineEvent, WorldAsset, WorkspaceResponse } from './types'
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string, readonly code?: string) {
@@ -12,8 +12,8 @@ type ChatStreamOptions = {
   onDelta?: (text: string) => void
 }
 
-function chatBody(requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string) {
-  return JSON.stringify({ request_id: requestID, message, mode, chapter_id: chapterId, context, selection, chapter_title: chapterTitle, chapter_summary: chapterSummary })
+function chatBody(requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string, contextItems: ChatContextItems) {
+  return JSON.stringify({ request_id: requestID, message, mode, chapter_id: chapterId, context, selection, chapter_title: chapterTitle, chapter_summary: chapterSummary, context_items: contextItems })
 }
 
 async function request<T>(path: string, init: RequestInit = {}, workspaceID?: string): Promise<T> {
@@ -118,26 +118,26 @@ export const api = {
       request<Chapter>(`chapters/${chapterID}/revisions/${revisionID}/restore`, { method: 'POST', body: '{}' }, workspaceID),
     reorder: (workspaceID: string, chapterIDs: number[]) =>
       request<{ chapter_ids: number[] }>('chapters/order', { method: 'PUT', body: JSON.stringify({ chapter_ids: chapterIDs }) }, workspaceID),
-  generate: (workspaceID: string, id: number, instruction: string, context: string, chapterTitle: string, chapterSummary: string, signal?: AbortSignal) =>
+  generate: (workspaceID: string, id: number, instruction: string, context: string, chapterTitle: string, chapterSummary: string, contextItems: ChatContextItems, signal?: AbortSignal) =>
     request<{ text: string; provider: string }>(`chapters/${id}/generate`, {
       method: 'POST',
-      body: JSON.stringify({ instruction, context, chapter_title: chapterTitle, chapter_summary: chapterSummary }),
+      body: JSON.stringify({ instruction, context, chapter_title: chapterTitle, chapter_summary: chapterSummary, context_items: contextItems }),
       signal,
     }, workspaceID),
   },
-  chat: (workspaceID: string, requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string, signal?: AbortSignal) =>
+  chat: (workspaceID: string, requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string, contextItems: ChatContextItems, signal?: AbortSignal) =>
     request<ChatResponse>('chat', {
       method: 'POST',
-      body: chatBody(requestID, message, mode, chapterId, context, selection, chapterTitle, chapterSummary),
+      body: chatBody(requestID, message, mode, chapterId, context, selection, chapterTitle, chapterSummary, contextItems),
       signal,
     }, workspaceID),
-  chatStream: async (workspaceID: string, requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string, options: ChatStreamOptions = {}) => {
+  chatStream: async (workspaceID: string, requestID: string, message: string, mode: string, chapterId: number, context: string, selection: string, chapterTitle: string, chapterSummary: string, contextItems: ChatContextItems, options: ChatStreamOptions = {}) => {
     const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' })
     if (workspaceID) headers.set('X-Workspace-ID', workspaceID)
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers,
-      body: chatBody(requestID, message, mode, chapterId, context, selection, chapterTitle, chapterSummary),
+      body: chatBody(requestID, message, mode, chapterId, context, selection, chapterTitle, chapterSummary, contextItems),
       signal: options.signal,
     })
     if (!response.ok) {
@@ -235,5 +235,19 @@ export const api = {
     update: (workspaceID: string, id: number, input: Pick<Note, 'title' | 'body' | 'kind'>) =>
       request<Note>(`notes/${id}`, { method: 'PUT', body: JSON.stringify(input) }, workspaceID),
     remove: (workspaceID: string, id: number) => request<{ deleted: boolean }>(`notes/${id}`, { method: 'DELETE' }, workspaceID),
+  },
+  timeline: {
+    create: (workspaceID: string, input: Pick<TimelineEvent, 'title' | 'time_label' | 'description' | 'status' | 'chapter_id'>) =>
+      request<TimelineEvent>('timeline', { method: 'POST', body: JSON.stringify(input) }, workspaceID),
+    update: (workspaceID: string, id: number, input: Pick<TimelineEvent, 'title' | 'time_label' | 'description' | 'status' | 'chapter_id'>) =>
+      request<TimelineEvent>(`timeline/${id}`, { method: 'PUT', body: JSON.stringify(input) }, workspaceID),
+    remove: (workspaceID: string, id: number) => request<{ deleted: boolean }>(`timeline/${id}`, { method: 'DELETE' }, workspaceID),
+  },
+  worldAsset: {
+    create: (workspaceID: string, input: Pick<WorldAsset, 'name' | 'kind' | 'description' | 'details' | 'chapter_ids' | 'related_asset_ids'>) =>
+      request<WorldAsset>('world-assets', { method: 'POST', body: JSON.stringify(input) }, workspaceID),
+    update: (workspaceID: string, id: number, input: Pick<WorldAsset, 'name' | 'kind' | 'description' | 'details' | 'chapter_ids' | 'related_asset_ids'>) =>
+      request<WorldAsset>(`world-assets/${id}`, { method: 'PUT', body: JSON.stringify(input) }, workspaceID),
+    remove: (workspaceID: string, id: number) => request<{ deleted: boolean }>(`world-assets/${id}`, { method: 'DELETE' }, workspaceID),
   },
 }

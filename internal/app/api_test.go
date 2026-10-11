@@ -284,15 +284,44 @@ func TestAPICharacterAndNoteLifecycle(t *testing.T) {
 	}
 	f.expect(f.call(http.MethodDelete, "/api/notes/"+idPath(note.ID), nil), http.StatusOK)
 	f.expect(f.call(http.MethodDelete, "/api/notes/"+idPath(note.ID), nil), http.StatusNotFound)
+
+	chapter := decodeAPI[Chapter](t, f.expect(f.call(http.MethodPost, "/api/chapters", ChapterInput{Title: "时间线章节"}), http.StatusCreated))
+	event := decodeAPI[TimelineEvent](t, f.expect(f.call(http.MethodPost, "/api/timeline", TimelineEventInput{Title: "发现来信", TimeLabel: "第三天清晨", Description: "主角确认信件来自未来。", Status: "active", ChapterID: chapter.ID}), http.StatusCreated))
+	if event.Status != "active" || event.ChapterID != chapter.ID {
+		t.Fatalf("created timeline event = %+v", event)
+	}
+	f.expect(f.call(http.MethodGet, "/api/timeline", nil), http.StatusOK)
+	f.expect(f.call(http.MethodPost, "/api/timeline", TimelineEventInput{Title: "未知状态", Status: "later"}), http.StatusBadRequest)
+	updatedEvent := decodeAPI[TimelineEvent](t, f.expect(f.call(http.MethodPut, "/api/timeline/"+idPath(event.ID), TimelineEventInput{Title: "发现来信（确认）", Status: "done"}), http.StatusOK))
+	if updatedEvent.Title != "发现来信（确认）" || updatedEvent.Status != "done" || updatedEvent.ChapterID != 0 {
+		t.Fatalf("updated timeline event = %+v", updatedEvent)
+	}
+	linkedEvent := decodeAPI[TimelineEvent](t, f.expect(f.call(http.MethodPost, "/api/timeline", TimelineEventInput{Title: "章节被删除", ChapterID: chapter.ID}), http.StatusCreated))
+	f.expect(f.call(http.MethodDelete, "/api/chapters/"+idPath(chapter.ID), nil), http.StatusOK)
+	clearedEvent := decodeAPI[TimelineEvent](t, f.expect(f.call(http.MethodGet, "/api/timeline/"+idPath(linkedEvent.ID), nil), http.StatusOK))
+	if clearedEvent.ChapterID != 0 {
+		t.Fatalf("timeline chapter after chapter deletion = %d, want 0", clearedEvent.ChapterID)
+	}
+	f.expect(f.call(http.MethodDelete, "/api/timeline/"+idPath(event.ID), nil), http.StatusOK)
+	f.expect(f.call(http.MethodDelete, "/api/timeline/"+idPath(linkedEvent.ID), nil), http.StatusOK)
+	f.expect(f.call(http.MethodDelete, "/api/timeline/"+idPath(event.ID), nil), http.StatusNotFound)
 }
 
 func TestAPIExportsProduceDocumentsAndRejectWrongMethods(t *testing.T) {
 	f := newAPIFixture(t, "")
-	f.expect(f.call(http.MethodPost, "/api/chapters", ChapterInput{Title: "导出章", Content: "导出正文"}), http.StatusCreated)
+	chapter := decodeAPI[Chapter](t, f.expect(f.call(http.MethodPost, "/api/chapters", ChapterInput{Title: "导出章", Content: "导出正文"}), http.StatusCreated))
 
 	markdown := f.expect(f.call(http.MethodPost, "/api/workspace/export/markdown", nil), http.StatusOK)
 	if !strings.Contains(markdown.Body.String(), "导出正文") {
 		t.Fatal("markdown export is missing chapter text")
+	}
+	unsaved := f.expect(f.call(http.MethodPost, "/api/workspace/export/markdown", map[string]any{
+		"chapter_id":      chapter.ID,
+		"chapter_title":   "尚未保存的标题",
+		"chapter_content": "尚未保存的正文",
+	}), http.StatusOK)
+	if !strings.Contains(unsaved.Body.String(), "尚未保存的标题") || !strings.Contains(unsaved.Body.String(), "尚未保存的正文") {
+		t.Fatalf("markdown export did not include the unsaved chapter draft: %s", unsaved.Body.String())
 	}
 	for _, format := range []string{"docx", "epub"} {
 		response := f.expect(f.call(http.MethodPost, "/api/workspace/export/"+format, nil), http.StatusOK)

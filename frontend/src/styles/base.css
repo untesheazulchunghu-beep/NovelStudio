@@ -1,0 +1,33 @@
+:root {
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #d6d9e1;
+  background: #0e1015;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --bg: #0e1015;
+  --panel: #151820;
+  --panel-raised: #1a1e28;
+  --panel-hover: #202530;
+  --line: #2a2f3a;
+  --line-soft: #222630;
+  --text: #d6d9e1;
+  --muted: #7f8797;
+  --muted-2: #5f6674;
+  --accent: #a892f6;
+  --accent-strong: #c2b2ff;
+  --accent-dim: rgba(168, 146, 246, .14);
+  --warm: #e6ad7d;
+  --green: #63c79a;
+  --amber: #e2b36a;
+  --red: #dd7f89;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-width: 320px; height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); }
+button, input, textarea, select { font: inherit; }
+button { border: 0; color: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .6; }
+textarea, input, select { color: var(--text); }
+

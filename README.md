@@ -33,6 +33,8 @@ bin/novelstudio.exe
 
 开发代理目标可以通过 `NOVELSTUDIO_API_TARGET` 覆盖，适合在默认 API 端口已被占用时并行启动本项目。
 
+后端测试运行 `go test ./...`，CI 也会执行。服务只接受 `localhost`、`127.0.0.1` 和 `[::1]` 作为请求 Host；使用其他域名或局域网地址访问会收到 403，用于防止 DNS rebinding 页面读取本地工作区。
+
 使用 `build-web.bat` 构建后，可以从仓库根目录或 `bin` 目录启动 `novelstudio.exe`；默认数据库和前端目录会按应用目录定位。按 Ctrl+C 退出时，服务会等待进行中的请求结束，最多等待 10 秒。
 
 需要 Windows 便携包时，运行 `powershell -ExecutionPolicy Bypass -File .\package-portable.ps1`。脚本在 `release/NovelStudio-portable.zip` 生成包含服务、前端静态文件、README 和许可证的压缩包，不会打包本地数据库；如果目标输出已存在，脚本会停止以免覆盖旧包。

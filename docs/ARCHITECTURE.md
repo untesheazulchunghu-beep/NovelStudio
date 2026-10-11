@@ -15,6 +15,24 @@ Go net/http server (8080 by default; Vite proxy target is configurable)
 
 The local app supports multiple novel projects in one SQLite database. Each project has a workspace ID, and every workspace API request selects it through `X-Workspace-ID`; requests without the header use the seeded `default` workspace. Content tables carry the workspace ID, while the workspace row also has an `owner_id` field for future account ownership. The project list, creation, metadata update, and deletion endpoints are global to the current local user. Project deletion cascades to its content and refuses to remove the last project.
 
+## Code layout
+
+Backend (`internal/app`, one Go package, split by responsibility):
+
+- `server*.go`: routing and HTTP handlers by resource (projects, chapters, characters and notes, chat), request locks, and JSON helpers in `server_http.go`.
+- `chat_prompt.go`, `local_reply.go`, `model_client.go`: prompt construction, the offline rule engine, and the OpenAI-compatible model client.
+- `store*.go`: the in-memory workspace cache and its transactional operations (projects, chapters, characters and notes, chat requests, search, validation, normalization).
+- `sqlite*.go`: opening and protecting the database, schema migrations, workspace persistence, chat request records, and incremental deltas in `sqlite_delta.go`.
+- `export_*.go`, `backup.go`, `chapter_revisions.go`, `models.go`: exporters, backups, checkpoints, and shared types.
+
+Frontend (`frontend/src`):
+
+- `App.tsx`: workbench state and event orchestration.
+- `components/`: sidebar, assistant panel, editor placeholder, command palette, and chapter revision dialog.
+- `lib/`: pure helpers for text, search, formatting, and agent modes; `*Actions.ts` modules own chat, chapter, project, context-item, and editor workflows.
+- `styles.css` imports the ordered CSS sections under `styles/` for the workbench, editor, assistant, panels, dialogs, and responsive layouts.
+- `api.ts`, `types.ts` (API shapes), and `workbenchTypes.ts` (UI-local types).
+
 ## Agent context
 
 `POST /api/chat` receives the selected writing mode, chapter ID, the current editor title and goal, the current editor tail, an optional selected passage (limited to 1,800 Unicode characters), and the user message. The server adds project references and recent chat turns before calling the configured provider. Edit mode asks for replacement text only. Replies are saved with the conversation, and request results are stored separately from the 60-message history window. A client supplied `request_id` makes retries with the same request fingerprint return the saved user and assistant messages without generating another reply, even after the conversation history is trimmed; results remain until project deletion. Servers in the same process that open the same SQLite file share an in-memory request lock. Separate processes coordinate through a two-minute SQLite lease; waiters reuse completed results, and a crashed owner can be replaced after the lease expires. The transaction fences an expired owner from committing after takeover. A model call that exceeds the lease can still be duplicated, but the unique request result remains single. Reusing an ID for known different content returns HTTP 409 with `chat_request_conflict`; an older matching user message with no stored fingerprint returns `chat_request_unverifiable` so the UI does not assume that the new request was saved. The UI offers an explicit apply action that replaces the original range only while its source text is unchanged.

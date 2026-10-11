@@ -50,6 +50,9 @@ jobs:
       - name: Inspect Go packages
         run: go vet ./...
 
+      - name: Test Go packages
+        run: go test ./...
+
       - name: Build Go server
         run: go build ./cmd/novelstudio
 

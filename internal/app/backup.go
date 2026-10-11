@@ -126,17 +126,31 @@ func (s *Store) ImportProjectBackup(backup ProjectBackup) (ProjectSummary, error
 	if backup.Project.WordTarget < 0 {
 		return ProjectSummary{}, invalidProjectBackup("目标字数不能为负数")
 	}
+	if err := validateProjectTextFields(ProjectInput{Title: projectTitle, Subtitle: backup.Project.Subtitle, Genre: backup.Project.Genre, Premise: backup.Project.Premise}); err != nil {
+		return ProjectSummary{}, invalidProjectBackup(err.Error())
+	}
 	if len(backup.Chapters) > maxProjectBackupEntries || len(backup.ChapterRevisions) > maxProjectBackupEntries*maxChapterRevisions || len(backup.Characters) > maxProjectBackupEntries || len(backup.Notes) > maxProjectBackupEntries || len(backup.Chat) > maxProjectBackupEntries {
 		return ProjectSummary{}, invalidProjectBackup("备份中的项目条目过多")
+	}
+	for _, chapter := range backup.Chapters {
+		if err := validateChapterTextFields(ChapterInput{Title: chapter.Title, Summary: chapter.Summary}); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
 	}
 	for _, character := range backup.Characters {
 		if strings.TrimSpace(character.Name) == "" {
 			return ProjectSummary{}, invalidProjectBackup("角色名称不能为空")
 		}
+		if err := validateCharacterTextFields(CharacterInput{Name: character.Name, Role: character.Role, Description: character.Description, Traits: character.Traits}); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
+		}
 	}
 	for _, note := range backup.Notes {
 		if strings.TrimSpace(note.Title) == "" {
 			return ProjectSummary{}, invalidProjectBackup("便笺标题不能为空")
+		}
+		if err := validateNoteTextFields(note.Title, note.Body); err != nil {
+			return ProjectSummary{}, invalidProjectBackup(err.Error())
 		}
 	}
 	for _, message := range backup.Chat {

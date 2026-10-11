@@ -148,7 +148,9 @@ func buildEPUBNavigation(title string, chapters []Chapter, chapterNames []string
 	}
 	page.WriteString("</a></li>")
 	for i, chapter := range chapters {
-		page.WriteString(`<li><a href="text/` + chapterNames[i] + `">`)
+		page.WriteString(`<li><a href="text/`)
+		page.WriteString(chapterNames[i])
+		page.WriteString(`">`)
 		heading := fmt.Sprintf("第 %d 章 %s", chapter.Number, strings.NewReplacer("\r", " ", "\n", " ").Replace(chapter.Title))
 		if err := xml.EscapeText(&page, []byte(heading)); err != nil {
 			return "", err
@@ -186,7 +188,9 @@ func writeEPUBPageStart(page *strings.Builder, title, stylesheet string) error {
 	if err := xml.EscapeText(page, []byte(title)); err != nil {
 		return err
 	}
-	page.WriteString(`</title><link rel="stylesheet" type="text/css" href="` + stylesheet + `"/></head>`)
+	page.WriteString(`</title><link rel="stylesheet" type="text/css" href="`)
+	page.WriteString(stylesheet)
+	page.WriteString(`"/></head>`)
 	return nil
 }
 
@@ -206,11 +210,11 @@ func buildEPUBPackage(workspace Workspace, chapterNames []string) (string, error
 	packageDocument.WriteString(time.Now().UTC().Format("2006-01-02T15:04:05Z"))
 	packageDocument.WriteString(`</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="styles.css" media-type="text/css"/><item id="title-page" href="text/title.xhtml" media-type="application/xhtml+xml"/>`)
 	for i, chapterName := range chapterNames {
-		packageDocument.WriteString(fmt.Sprintf(`<item id="chapter-%04d" href="text/%s" media-type="application/xhtml+xml"/>`, i+1, chapterName))
+		fmt.Fprintf(&packageDocument, `<item id="chapter-%04d" href="text/%s" media-type="application/xhtml+xml"/>`, i+1, chapterName)
 	}
 	packageDocument.WriteString(`</manifest><spine><itemref idref="title-page"/>`)
 	for i := range chapterNames {
-		packageDocument.WriteString(fmt.Sprintf(`<itemref idref="chapter-%04d"/>`, i+1))
+		fmt.Fprintf(&packageDocument, `<itemref idref="chapter-%04d"/>`, i+1)
 	}
 	packageDocument.WriteString(`</spine></package>`)
 	return packageDocument.String(), nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log"
@@ -128,9 +129,16 @@ func withCORS(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
+		// Checking Host blocks DNS rebinding: a page on an attacker's domain that
+		// resolves to 127.0.0.1 is same-origin with its own server, so its GET
+		// requests carry no Origin header and would otherwise read the workspace.
+		if !isLoopbackAuthority(r.Host) {
+			writeForbiddenError(w, "request host is not allowed")
+			return
+		}
 		origin := r.Header.Get("Origin")
 		if origin != "" && !allowedBrowserOrigin(r, origin) {
-			writeOriginError(w)
+			writeForbiddenError(w, "request origin is not allowed")
 			return
 		}
 		if isDevelopmentOrigin(origin) {
@@ -189,10 +197,11 @@ func isDevelopmentOrigin(origin string) bool {
 	return isLoopbackAuthority(parsed.Host)
 }
 
-func writeOriginError(w http.ResponseWriter) {
+func writeForbiddenError(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(`{"error":"request origin is not allowed"}` + "\n"))
+	body, _ := json.Marshal(map[string]string{"error": message})
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func withLogging(next http.Handler) http.Handler {

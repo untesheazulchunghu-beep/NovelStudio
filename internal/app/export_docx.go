@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,9 +20,11 @@ type documentExportRequest struct {
 	ChapterContent string `json:"chapter_content"`
 }
 
+// documentExportSnapshot loads the workspace for an export. The request body is
+// optional: it only carries the unsaved editor draft of the current chapter.
 func (s *Server) documentExportSnapshot(w http.ResponseWriter, r *http.Request, workspaceID string) (Workspace, bool) {
 	var input documentExportRequest
-	if err := readJSONLimit(r, &input, maxJSONRequestBytes); err != nil {
+	if err := readJSONLimit(r, &input, maxJSONRequestBytes); err != nil && !errors.Is(err, ErrEmptyJSONBody) {
 		writeJSONRequestError(w, err)
 		return Workspace{}, false
 	}
